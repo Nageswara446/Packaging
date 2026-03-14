@@ -1,0 +1,389 @@
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+def Ansible = "${env.Build_URL.split('-')[1] == 'prod'  ? 'jenkins-AIP-DEV' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower ' : 'none' }"
+
+//def agentName = "TerraformAgentAzure${JenkinsEnv == 'Prod' ? LocationToBuild.toLowerCase() : JenkinsEnv == 'Dev' ? 'dgwc1' : 'none'}"
+
+def agentName = "TerraformAgentAzurefc1"
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+    parameters {
+        activeChoice choiceType: 'PT_RADIO', description: 'Select the Machine Type to deploy from the Dropdown List', filterLength: 1, filterable: false, name: 'MachineType', randomName: 'choice-parameter-2156883336707708', script: groovyScript(fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: 'return["Select a Machine Type from dropdown"]'], script: [classpath: [], oldScript: '', sandbox: false, script: '''return[
+            \'InstallShield-Image\',
+            \'TestMachine-Image\',
+            \'SmokeTest-Image\'
+        ]'''])
+        string(name: "ReleaseVersion", defaultValue: "001", description: "Specify the Release Number in 3 digit form")
+        choice choices: ['A', 'B', 'C', 'D', 'E', 'F'], description: 'Specify the Candidate Version', name: 'Candidate Version'
+        string(name: "Year", defaultValue: "2026", description: "Enter Year")
+
+    }
+    environment {
+        JenkinsEnvVar = "${JenkinsEnv}"
+        ANSIBLE = "${Ansible}"
+        VDI_BUILD_LOCATION = "CE1PVM"
+        MachineType = "${params.MachineType}"
+        Release_Version = "${params.ReleaseVersion}"
+        Candidate_Version = "${params['Candidate Version']}"
+        CRC_DC = "${params.MachineType == 'SmokeTest-Image' ? 'E1' : params.MachineType == 'TestMachine-Image' ? 'A1' : ''}"
+    }
+    stages {
+        stage("Read Config"){
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: "81b51ae8-6afb-45eb-b2ed-5b626ea69281",
+                    //subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
+                    clientIdVariable: 'Backend_ARM_CLIENT_ID',
+                    clientSecretVariable: 'Backend_ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'Backend_ARM_TENANT_ID'
+                )]) {
+                    dir("configs") {
+                        script {
+                            def imagesettings = readJSON file: "${VDI_BUILD_LOCATION}-STD.json"
+
+                            // Check the selected MachineType and assign a different VM name
+                           if (MachineType.equalsIgnoreCase("InstallShield-Image")) {
+                                env.TF_VAR_vm_name = "${imagesettings.installshieldvmname}${currentBuild.number + 10000}"
+                            } else if (MachineType.equalsIgnoreCase("TestMachine-Image")) {
+                                env.TF_VAR_vm_name = "${imagesettings.testmachinevmname}${currentBuild.number + 10000}"
+                            } else if (MachineType.equalsIgnoreCase("SmokeTest-Image")) {
+                                env.TF_VAR_vm_name = "${imagesettings.smoketestvmname}${currentBuild.number + 10000}"
+                            } else {
+                                error "Unsupported MachineType: ${MachineType}"
+                            }
+
+
+                            def releaseIncrement = "${env.Release_Version}"
+                            def candidate = "${env.Candidate_Version}"
+                            def year = params.Year.toString().substring(2)
+                            
+                            
+
+                            def imageVersion
+                            if (candidate == "A") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.1"
+                            } else if (candidate == "B") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.2"
+                            } else if (candidate == "C") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.3"
+                            } else if (candidate == "D") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.4"
+                            } else if (candidate == "E") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.5"
+                            } else if (candidate == "F") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.6"
+                            } else {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.0"
+                            }
+
+                            // if (MachineType.equalsIgnoreCase("Packaging-InstallShield")) {
+                            //     env.TF_VAR_resource_group_name = "${imagesettings.resource_group_name_installShield}"
+                            // } else if (MachineType.equalsIgnoreCase("Packaging-TestMachine")) {
+                            //     env.TF_VAR_resource_group_name = "${imagesettings.resource_group_name_testMachine}"
+                            // } else {
+                            //     // Handle any other case if necessary
+                            //     error "Unsupported MachineType: ${MachineType}"
+                            // }
+
+                            // Update the environment variable
+                            env.TF_VAR_resource_group_name = "${imagesettings.resource_group_name_new}"
+                            env.definition_name = "${imagesettings.definition_name}"
+                            env.definition_name_installshield = "${imagesettings.definition_name_installshield}"
+                            env.TF_VAR_subnet_name = "${imagesettings.subnet_name_new}"
+                            env.TF_VAR_vnet = "${imagesettings.vnet_new}"
+                            env.TF_VAR_vnet_rg = "${imagesettings.vnet_rg_new}"
+                            env.TF_VAR_subscriptionId = "${imagesettings.subscriptionId_new}"
+                            env.ARM_SUBSCRIPTION_ID = "${imagesettings.subscriptionId_new}"
+                            env.TenantId = "${imagesettings.tenantId}"
+                            env.TF_CLI_ARGS_init = " -reconfigure -backend=true -backend-config=subscription_id=${imagesettings.backend_subscriptionId} -backend-config=resource_group_name=${imagesettings.backend_rg} -backend-config=storage_account_name=${imagesettings.backend_storageaccount} -backend-config=container_name=${imagesettings.backend_containername} -backend-config=key=${TF_VAR_vm_name}.${TF_VAR_subscriptionId}.tfstate -backend-config=client_id=${Backend_ARM_CLIENT_ID} -backend-config=client_secret=${Backend_ARM_CLIENT_SECRET} -backend-config=tenant_id=${Backend_ARM_TENANT_ID}"
+                            env.Azure_Credential_ID = "${imagesettings.credential}"
+                            env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-Packaging-InstallShieldinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-Packaging-InstallShieldinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-Packaging-InstallShieldinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                            env.TF_VAR_Machine_Type = "${env.MachineType}"
+                            env.TF_VAR_EmailAddress = "${env.EmailAddress}"
+                            env.cig_rg = "${imagesettings.cig_rg_new}"
+                            env.cig_name = "${imagesettings.cig_name}"
+                            env.image_version = imageVersion
+                            env.releaseIncrement = releaseIncrement
+                            env.Year = year
+                            env.candidate = candidate
+                            env.definition_name_le = "${imagesettings.definition_name_LEVM}"
+
+                            env.MainVar = "STD.Azure"
+
+                            env.sa_username = "${imagesettings.sa_username}"
+
+                            // Add logic for setting expiration date based on PackageComplexity
+
+                        }
+                    }
+                }
+                echo "VM Name is: $env.TF_VAR_vm_name"
+                echo "MachineType is : ${env.TF_VAR_Machine_Type}"
+                echo "imageVersion is: ${env.image_version}"
+            }
+        }
+        stage('Terraform Init/Plan/Apply') {
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: "${env.Azure_Credential_ID}",
+                    //subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
+                    clientIdVariable: 'ARM_CLIENT_ID',
+                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'ARM_TENANT_ID'
+                ),
+                usernamePassword(credentialsId: '314bad8d-2c94-41c9-b5e2-0317cab8f1f4', usernameVariable: 'TF_VAR_admin_username', passwordVariable: 'TF_VAR_admin_password')
+                ]) {
+                        dir("terraform") {
+                            sh """
+                                export HTTP_PROXY=${env.Proxy}
+                                terraform init ${env.TF_CLI_ARGS_init}
+                                terraform plan
+                                terraform apply -input=false --auto-approve
+                            """
+                            script {
+                                env.IP_Address = sh(returnStdout: true, script: "terraform output ip_address").trim()
+                            } 
+                        }  
+                    }
+
+            }
+        }
+        stage('VDI_Build_Azure_Packaging_InstallShield') {
+            when {
+                expression { env.MachineType == 'InstallShield-Image' }
+            }
+            steps {
+                // Retrieve domain username and password from Jenkins credentials
+                withCredentials([usernamePassword(
+                    credentialsId: '6694963f-6b29-4d18-83d9-ca933158c926',
+                    usernameVariable: 'domain_username', 
+                    passwordVariable: 'domain_password'
+                )]) {
+                    ansibleTower(
+                        jobTemplate: 'AVC-Cloud-Packaging-InstallShield',
+                        jobType: 'run',
+                        throwExceptionWhenFail: true,
+                        towerCredentialsId: 'cc5bfdd9-1b5c-4089-85f5-f5598cf2d767',
+                        towerLogLevel: 'false',
+                        towerServer: "${env.ANSIBLE}",
+                        extraVars: '''{
+                            "HostNameFact": $IP_Address,
+                            "OfficeSKU": $OfficeSKU,
+                            "PackagingTool": $PackagingTool,
+                            "AOClient": $AOClient,
+                            "AdminRights": $AdminRights,
+                            "EmailAddress": $EmailAddress,
+                            "sa_username": "${sa_username}"
+                        }'''  
+                    )
+                }
+            }
+        }
+        stage('VDI_Build_Azure_Packaging_TestMachine') {
+            when {
+                expression { env.MachineType == 'TestMachine-Image' }
+            }
+            steps {
+                // Retrieve domain username and password from Jenkins credentials
+                withCredentials([usernamePassword(
+                    credentialsId: '6694963f-6b29-4d18-83d9-ca933158c926',
+                    usernameVariable: 'domain_username', 
+                    passwordVariable: 'domain_password'
+                )]) {
+                    ansibleTower(
+                        jobTemplate: 'AVC-Cloud-Packaging-TestMachine',
+                        jobType: 'run',
+                        throwExceptionWhenFail: true,
+                        towerCredentialsId: 'cc5bfdd9-1b5c-4089-85f5-f5598cf2d767',
+                        towerLogLevel: 'false',
+                        towerServer: "${env.ANSIBLE}",
+                        extraVars: '''{
+                            "HostNameFact": $IP_Address,
+                            "OfficeSKU": $OfficeSKU,
+                            "PackagingTool": $PackagingTool,
+                            "AOClient": $AOClient,
+                            "AdminRights": $AdminRights,
+                            "EmailAddress": $EmailAddress,
+                            "sa_username": "${sa_username}"
+                        }'''  
+                    )
+                }
+            }
+        }
+        stage('VDI_Build_Azure_Smoke-Test-Image') {
+            when {
+                expression { env.MachineType == 'SmokeTest-Image' }
+            }
+            steps {
+                // Retrieve domain username and password from Jenkins credentials
+                withCredentials([usernamePassword(
+                    credentialsId: '6694963f-6b29-4d18-83d9-ca933158c926',
+                    usernameVariable: 'domain_username', 
+                    passwordVariable: 'domain_password'
+                )]) {
+                    ansibleTower(
+                        jobTemplate: 'AVC-Cloud-Packaging-LEClient',
+                        jobType: 'run',
+                        throwExceptionWhenFail: true,
+                        towerCredentialsId: 'cc5bfdd9-1b5c-4089-85f5-f5598cf2d767',
+                        towerLogLevel: 'false',
+                        towerServer: "${env.ANSIBLE}",
+                        extraVars: '''{
+                            "HostNameFact": $IP_Address,
+                            "OfficeSKU": $OfficeSKU,
+                            "PackagingTool": $PackagingTool,
+                            "AOClient": $AOClient,
+                            "AdminRights": $AdminRights,
+                            "EmailAddress": $EmailAddress,
+                            "sa_username": "${sa_username}",
+                            "Archivestorageaccountname": "${Archivestorageaccountname}",
+                            "Archivecontainername": "${Archivecontainername}"
+                        }'''  
+                    )
+                }
+            }
+        }
+
+        stage('Create Azure Image Version'){
+            when {
+                expression {  env.MachineType == 'TestMachine-Image' }
+            }
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: '03b65dc3-61a6-41da-b426-96e10f93e367',
+                    clientIdVariable: 'ARM_CLIENT_ID',
+                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'ARM_TENANT_ID'
+                )]) {
+                        script {
+                            //Use the variables provided by the withCredentials block and configs
+                            def azureClientId =  env.ARM_CLIENT_ID
+                            def azureClientSecret = env.ARM_CLIENT_SECRET
+                            def azureTenantId =  env.ARM_TENANT_ID
+                            def virtualMachineName = "${env.TF_VAR_vm_name}"
+                            def resourceGroupName = "${env.TF_VAR_resource_group_name}"
+                            def ARM_SUBSCRIPTION_ID = env.ARM_SUBSCRIPTION_ID
+                            def resource_ID = "/subscriptions/$ARM_SUBSCRIPTION_ID/resourceGroups/${resourceGroupName}/providers/Microsoft.Compute/virtualMachines/${virtualMachineName}"                  
+                            //Azure Loginusing the environment variables
+                            bat "az login --service-principal -u ${azureClientId} -p ${azureClientSecret} -t ${azureTenantId}"
+
+                            bat "az account set --subscription ${ARM_SUBSCRIPTION_ID}"
+
+                            //Deallocating the VM
+                            bat "az vm deallocate --name ${virtualMachineName} --resource-group ${resourceGroupName} --verbose"
+
+                            //Run the Azure CLI command to create the image version
+                            bat "az sig image-version create --resource-group ${env.cig_rg} --gallery-name ${env.cig_name} --gallery-image-definition ${env.definition_name} --gallery-image-version ${env.image_version} --target-regions francecentral germanywestcentral southeastasia australiaeast centralus eastus2  --replica-count 1 --virtual-machine ${resource_ID}"
+                        }
+                    }
+            }
+        }
+        stage('Create Azure Image Version InstallShield'){
+            when {
+                expression {  env.MachineType == 'InstallShield-Image' }
+            }
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: '03b65dc3-61a6-41da-b426-96e10f93e367',
+                    clientIdVariable: 'ARM_CLIENT_ID',
+                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'ARM_TENANT_ID'
+                )]) {
+                        script {
+                            //Use the variables provided by the withCredentials block and configs
+                            def azureClientId =  env.ARM_CLIENT_ID
+                            def azureClientSecret = env.ARM_CLIENT_SECRET
+                            def azureTenantId =  env.ARM_TENANT_ID
+                            def virtualMachineName = "${env.TF_VAR_vm_name}"
+                            def resourceGroupName = "${env.TF_VAR_resource_group_name}"
+                            def ARM_SUBSCRIPTION_ID = env.ARM_SUBSCRIPTION_ID
+                            def resource_ID = "/subscriptions/$ARM_SUBSCRIPTION_ID/resourceGroups/${resourceGroupName}/providers/Microsoft.Compute/virtualMachines/${virtualMachineName}"                  
+                            //Azure Loginusing the environment variables
+                            bat "az login --service-principal -u ${azureClientId} -p ${azureClientSecret} -t ${azureTenantId}"
+
+                            bat "az account set --subscription ${ARM_SUBSCRIPTION_ID}"
+
+                            //Deallocating the VM
+                            bat "az vm deallocate --name ${virtualMachineName} --resource-group ${resourceGroupName} --verbose"
+
+                            //Run the Azure CLI command to create the image version
+                            bat "az sig image-version create --resource-group ${env.cig_rg} --gallery-name ${env.cig_name} --gallery-image-definition ${env.definition_name_installshield} --gallery-image-version ${env.image_version} --target-regions francecentral germanywestcentral southeastasia australiaeast centralus eastus2  --replica-count 1 --virtual-machine ${resource_ID}"
+                        }
+                    }
+            }
+        }
+        stage('Create Azure Image Version Smoke-Test-VM'){
+            when {
+                expression {  env.MachineType == 'SmokeTest-Image' }
+            }
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: '03b65dc3-61a6-41da-b426-96e10f93e367',
+                    clientIdVariable: 'ARM_CLIENT_ID',
+                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'ARM_TENANT_ID'
+                )]) {
+                        script {
+                            //Use the variables provided by the withCredentials block and configs
+                            def azureClientId =  env.ARM_CLIENT_ID
+                            def azureClientSecret = env.ARM_CLIENT_SECRET
+                            def azureTenantId =  env.ARM_TENANT_ID
+                            def virtualMachineName = "${env.TF_VAR_vm_name}"
+                            def resourceGroupName = "${env.TF_VAR_resource_group_name}"
+                            def ARM_SUBSCRIPTION_ID = env.ARM_SUBSCRIPTION_ID
+                            def resource_ID = "/subscriptions/$ARM_SUBSCRIPTION_ID/resourceGroups/${resourceGroupName}/providers/Microsoft.Compute/virtualMachines/${virtualMachineName}"                  
+                            //Azure Loginusing the environment variables
+                            bat "az login --service-principal -u ${azureClientId} -p ${azureClientSecret} -t ${azureTenantId}"
+
+                            bat "az account set --subscription ${ARM_SUBSCRIPTION_ID}"
+
+                            //Deallocating the VM
+                            bat "az vm deallocate --name ${virtualMachineName} --resource-group ${resourceGroupName} --verbose"
+
+                            //Run the Azure CLI command to create the image version
+                            bat "az sig image-version create --resource-group ${env.cig_rg} --gallery-name ${env.cig_name} --gallery-image-definition ${env.definition_name_le} --gallery-image-version ${env.image_version} --target-regions francecentral germanywestcentral southeastasia australiaeast centralus eastus2  --replica-count 1 --virtual-machine ${resource_ID}"
+                        }
+                    }
+            }
+        }
+        
+    }
+    post {
+        always {
+            script {
+                // Check the build result
+                if (currentBuild.result == 'SUCCESS') {
+                    // Send success notification to the specified user
+                    emailext subject: "Build #${currentBuild.number}_SelfService Packaging VM - Success",
+                        body: """Dear User,
+
+        "$env.TF_VAR_vm_name" has been created, and the IP address is $env.IP_Address.
+
+        Regards,
+        Automation Team
+        """,
+                        to: "${env.EmailAddress}",
+                        from: "jenkins@allianz.de"
+                } else {
+                    // Send failure notification to the developer's email address
+                    emailext subject: "Build #${currentBuild.number}_SelfService Packaging VM - Failed",
+                        body: """Hi Team,
+
+        The build failed for "$env.TF_VAR_vm_name". Please investigate and take appropriate action.
+        Build initated by "${env.EmailAddress}".
+
+        Regards,
+        Automation Team
+        """,
+                        to: "${env.EmailAddress}, extern.b-m_nitin@allianz.de, extern.sakeeth_nudurupati-sai@allianz.de", // Replace with the developer's email address
+                        from: "jenkins@allianz.de"
+                }
+            }
+        }
+    }
+}
+
+
+

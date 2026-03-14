@@ -1,0 +1,41 @@
+<type type="githubfileaccess.GetFile" extends="xlrelease.PythonScript" virtual="true">
+    <label>Get File from GitHub</label>
+
+    <!-- Connection: Dropdown to select existing GitHub connection -->
+    <property name="server"
+              category="input"
+              label="Server"
+              description="Select GitHub Connection"
+              required="true"
+              referenced-type=".Server"
+              kind="ci"/>
+
+    <!-- Task-specific inputs -->
+    <property name="organization"
+              category="input"
+              label="Organization"
+              description="GitHub organization"
+              required="true"/>
+    <property name="repo"
+              category="input"
+              label="Repository"
+              description="GitHub repository name"
+              required="true"/>
+    <property name="branch"
+              category="input"
+              label="Branch"
+              description="Branch name"
+              required="true"
+              default="main"/>
+    <property name="filename"
+              category="input"
+              label="Filename"
+              description="Path to file inside repository"
+              required="true"/>
+
+    <!-- Output -->
+    <property name="fileContent"
+              category="output"
+              label="File Content"
+              kind="string"/>
+</type>

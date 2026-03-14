@@ -1,0 +1,82 @@
+
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+def Ansible = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Ansible Tower Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower ' : 'none' }"
+
+//def agentName = "TerraformAgentAzure${JenkinsEnv == 'Prod' ? LocationToBuild.toLowerCase() : JenkinsEnv == 'Dev' ? 'dgwc1' : 'none'}"
+
+def agentName = "TerraformAgentAzurefc1"
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+
+    environment {     
+        JenkinsEnvVar = "${JenkinsEnv}"
+        VDI_BUILD_LOCATION = "CE1PVM"
+    }
+    stages {
+        stage("Read Config"){
+            steps {
+                dir("configs") {
+                    script {
+                        def imagesettings = readJSON file: "${VDI_BUILD_LOCATION}-STD.json"
+                        // Update the environment variable
+                        env.TenantId = "${imagesettings.tenantId}"
+                        env.ARM_SUBSCRIPTION_ID = "${imagesettings.packaging_subscriptionid}"
+                        env.IATClient_ResourceGroup_Name ="${imagesettings.iatclient_resourcegroup_name}"
+                        env.CitrixCustomerId = "${imagesettings.citrixcustomerid}"
+                        env.Azure_Credential_ID = "${imagesettings.credential}"
+                        env.IAT_CatalogName = "${imagesettings.IAT_CatalogName}"
+                        env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                        env.MainVar = "STD.Azure"
+                    }
+                }
+            }
+        }
+        stage('Notify/Decommission VM from Azure') {
+            steps {
+                script {
+                    withCredentials([
+                        azureServicePrincipal(
+                            credentialsId: "${env.Azure_Credential_ID}", 
+                            clientIdVariable: 'ARM_CLIENT_ID', 
+                            clientSecretVariable: 'ARM_CLIENT_SECRET', 
+                            tenantIdVariable: 'ARM_TENANT_ID'
+                        ),
+                        usernamePassword(credentialsId: 'ebfe6e62-ce6b-4472-8e36-a654bf559bdf', usernameVariable: 'TF_VAR_TMU_username', passwordVariable: 'TF_VAR_TMU_password'),
+                        usernamePassword(credentialsId: '7a94d8a9-d71d-4875-ae97-e9901eabea8d', passwordVariable: 'citrixPassword', usernameVariable: 'citrixClientId')
+                    ]) {
+                        dir("Powershell") {
+                            powershell '''
+                            
+                            # Notify/Decommission VM from Azure
+                            ./DecommIATVM.ps1 -tenantId ${env:ARM_TENANT_ID} -subscriptionId ${env:ARM_SUBSCRIPTION_ID} -clientId ${env:ARM_CLIENT_ID} -clientSecret ${env:ARM_CLIENT_SECRET} -resourceGroupName ${env:IATClient_ResourceGroup_Name} -CatalogName ${env:IAT_CatalogName} -TMUusername ${env:TF_VAR_TMU_username} -TMUpassword ${env:TF_VAR_TMU_password} -CitrixCustomerId ${env:CitrixCustomerId} -citrixClientId ${env:citrixClientId} -citrixPassword ${env:citrixPassword}    
+                           '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                // Check the build result
+                if (currentBuild.result == 'FAILURE') {
+                    // Send failure notification to the developer's email address
+                    emailext subject: "Build #${currentBuild.number}_Packaging VM Decommision Job - Failed",
+                        body: """Hi Team,
+
+    The packaging VM Decommission job has failed, requiring your immediate attention. Kindly investigate the issue and take the necessary corrective measures.
+
+    Regards,
+    Automation Team
+    """,
+                        to: "extern.b-m_nitin@allianz.de, extern.sakeeth_nudurupati-sai@allianz.de",
+                        from: "jenkins@allianz.de"
+                }
+            }
+        }
+    }
+}

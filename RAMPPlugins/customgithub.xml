@@ -1,0 +1,24 @@
+<!-- GitHub Server Connection Type -->
+<type type="customgithub.Server" extends="xlrelease.Configuration">
+    <property name="base_url" label="GitHub Base URL" description="Base URL of GitHub API (e.g., https://api.github.com)" required="true"/>
+    <property name="token" label="Personal Access Token" description="GitHub Personal Access Token" kind="string" password="true" required="true"/>
+</type>
+
+<!-- Base GitHub Task -->
+<type type="customgithub.Task" extends="xlrelease.PythonScript" virtual="true">
+    <property name="taskColor" hidden="true" default="#EC8022"/>
+    <!-- Reference the server connection -->
+    <property name="server" category="input" label="Server" description="Select GitHub Connection" required="true" referenced-type="customgithub.Server" kind="ci"/>
+</type>
+
+<!-- Get File from GitHub Task -->
+<type type="customgithub.GetFile" extends="customgithub.Task">
+    <!-- Task Inputs -->
+    <property name="organization" category="input" label="Organization" description="GitHub organization" required="true"/>
+    <property name="repository" category="input" label="Repository" description="GitHub repository" required="true"/>
+    <property name="branch" category="input" label="Branch" description="Git branch" required="true" default="main"/>
+    <property name="filename" category="input" label="Filename" description="Path to file in repository" required="true"/>
+    
+    <!-- Task Outputs -->
+    <property name="fileContent" category="output" label="File Content" kind="string"/>
+</type>

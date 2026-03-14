@@ -1,0 +1,382 @@
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+//def Ansible = "${env.BUILD_URL.contains('AVC_Cloud_AOClient_Image_Build')  ? 'Jenkins AIP DEV' : env.BUILD_URL.split('-')[1] == 'prod'  ? 'Ansible Tower Prod' : env.BUILD_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower' : 'none' }"
+def Ansible = "${env.Build_URL.split('-')[1] == 'prod'  ? 'jenkins-AIP-DEV' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower ' : 'none' }"
+
+//def agentName = "TerraformAgentAzure${JenkinsEnv == 'Prod' ? LocationToBuild.toLowerCase() : JenkinsEnv == 'Dev' ? 'dgwc1' : 'none'}"
+
+def agentName = "TerraformAgentAzurefc1"
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+    parameters {
+        //choice choices: ['Normal', 'Special', 'Vanilla'], description: 'Specify the Normal, Special Release or Vanilla', name: 'Release Type'
+        activeChoice choiceType: 'PT_SINGLE_SELECT', description: 'Specify the Normal, Special, or Vanilla Release', name: 'ReleaseType', randomName: 'choice-parameter-123456789', script: groovyScript(fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: 'return["Select a Release Type"]'], script: [classpath: [], oldScript: '', sandbox: false, script: '''
+        return [
+            'Normal',
+            'Special',
+            'Vanilla'
+        ]
+        '''])
+        string(name: "ReleaseVersion", defaultValue: "001", description: "Specify the Release Number in 3 digit form")
+        choice choices: ['A', 'B', 'C', 'D', 'E', 'F'], description: 'Specify the Candidate Version', name: 'Candidate Version'
+        string(name: "Year", defaultValue: "2025", description: "Enter Year")
+        choice choices: ['Normal', 'Special'], description: 'Specify the Previous Release Type', name: 'Previous Release Type'
+        string(name: "Previous Release Version", defaultValue: "001", description: "Specify the Previous Release Number in 3 digit form")
+        reactiveChoice(
+            choiceType: 'PT_CHECKBOX',
+            filterLength: 1,
+            filterable: false,
+            name: 'DeleteMasterVM',
+            description: 'Select this option if you want to delete the Master VM after image creation. N/A for Vanilla Build.',
+            randomName: 'choice-parameter-1150250476570636',
+            referencedParameters: 'ReleaseType',
+            script: groovyScript(
+                fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: '\'return["Select an Release Type"]\''],
+                script: [classpath: [], oldScript: '', sandbox: false, script: '''
+                    return ReleaseType == "Normal" || ReleaseType == "Special" ? ['Delete:selected'] : []
+                '''
+                ]
+            )
+        )
+        reactiveChoice(
+            choiceType: 'PT_CHECKBOX',
+            filterLength: 1,
+            filterable: false,
+            name: 'DeleteImageRelease',
+            description: 'This will delete N-3 Image release from Azure Compute Gallery. N/A for Vanilla Build.',
+            randomName: 'choice-parameter-1150250476570646',
+            referencedParameters: 'ReleaseType',
+            script: groovyScript(
+                fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: '\'return["Select an Release Type"]\''],
+                script: [classpath: [], oldScript: '', sandbox: false, script: '''
+                    return ReleaseType == "Normal" || ReleaseType == "Special" ? ['Delete:selected'] : []
+                '''
+                ]
+            )
+        )
+    }
+    environment {
+        LOCAL_CRED = credentials('88884f54-a16a-4ca9-b4a6-23b33977b836')     
+        JenkinsEnvVar = "${JenkinsEnv}"
+        ANSIBLE = "${Ansible}"
+        VDI_BUILD_LOCATION_CE2 = "CE2"
+        VDI_BUILD_LOCATION_CE1 = "CE1PVM"
+        Release_Type = "${params.ReleaseType}"
+        Release_Version = "${params.ReleaseVersion}"
+        Candidate_Version = "${params['Candidate Version']}"
+        PreviousReleaseVersion = "${params['Previous Release Version']}"
+    }
+    stages {
+        stage("Read Config"){
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: "81b51ae8-6afb-45eb-b2ed-5b626ea69281",
+                    //subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
+                    clientIdVariable: 'Backend_ARM_CLIENT_ID',
+                    clientSecretVariable: 'Backend_ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'Backend_ARM_TENANT_ID'
+                )]) {
+                    dir("configs") {
+                        script {
+                            def imagesettings_CE1 = readJSON file: "${VDI_BUILD_LOCATION_CE1}-STD.json"
+                            def imagesettings_CE2 = readJSON file: "${VDI_BUILD_LOCATION_CE2}-STD.json"
+                            def releaseIncrement = "${env.Release_Version}"
+                            def candidate = "${env.Candidate_Version}"
+                            def year = params.Year.toString().substring(2)
+                            def releasetype = "${env.Release_Type}"
+                            def previousreleasetype = "${params['Previous Release Type']}"
+
+                            def imageVersion
+                            if (candidate == "A") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.1"
+                            } else if (candidate == "B") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.2"
+                            } else if (candidate == "C") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.3"
+                            } else if (candidate == "D") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.4"
+                            } else if (candidate == "E") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.5"
+                            } else if (candidate == "F") {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.6"
+                            } else {
+                                imageVersion = "${year}.${releaseIncrement.toInteger()}.0"
+                            }
+
+                            def deleteimageVersion
+                                deleteimageVersion = "${year}.${releaseIncrement.toInteger() - 3}.*"
+                            // if (candidate == "A") {
+                            //     deleteimageVersion = "${year}.${releaseIncrement.toInteger() - 3}.1"
+                            // } else if (candidate == "B") {
+                            //     deleteimageVersion = "${year}.${releaseIncrement.toInteger() - 3}.2"
+                            // } else if (candidate == "C") {
+                            //     deleteimageVersion = "${year}.${releaseIncrement.toInteger() - 3}.3"
+                            // } else if (candidate == "D") {
+                            //     deleteimageVersion = "${year}.${releaseIncrement.toInteger() - 3}.4"
+                            // } else if (candidate == "E") {
+                            //     deleteimageVersion = "${year}.${releaseIncrement.toInteger() - 3}.5"
+                            // } else if (candidate == "F") {
+                            //     deleteimageVersion = "${year}.${releaseIncrement.toInteger() - 3}.6"
+                            // } else {
+                            //     deleteimageVersion = "${year}.${releaseIncrement.toInteger() - 3}.0"
+                            // }
+                            
+                            def ReleaseType
+                            if (releasetype == "Normal") {
+                                ReleaseType = "PR"
+                            } else if (releasetype == "Special"){
+                                ReleaseType = "SR"
+                            } else {
+                            ReleaseType = "VR"
+                            } 
+
+                            def PreviousReleaseType
+                            if (previousreleasetype == "Normal") {
+                                PreviousReleaseType = "PR"
+                            } else if (previousreleasetype == "Special"){
+                                PreviousReleaseType = "SR"
+                            } else {
+                            PreviousReleaseType = "VR"
+                            }                       
+
+                            
+                            // Update the environment variable
+                            env.definition_name = "${imagesettings_CE1.definition_name_LEVM}"
+                            env.TF_VAR_vm_name = "${imagesettings_CE1.vmname}${currentBuild.number + 10000}"
+                            env.TF_VAR_subnet_name = "${imagesettings_CE1.le_subnet}"
+                            env.TF_VAR_resource_group_name = "${imagesettings_CE1.resource_group_name}"
+                            env.TF_VAR_vnet = "${imagesettings_CE1.vnet}"
+                            env.TF_VAR_vnet_rg = "${imagesettings_CE1.vnet_rg}"
+                            env.TF_VAR_subscriptionId = "${imagesettings_CE1.subscriptionId}"
+                            env.TenantId = "${imagesettings_CE1.tenantId}"
+                            env.TF_VAR_domain_techuser = "${imagesettings_CE1.domain_techuser}"
+                            env.Azure_Credential_ID = "${imagesettings_CE1.credential}"
+                            //env.Azure_Credential_ID1 = "${imagesettings_CE1.credential1}"
+                            env.TF_CLI_ARGS_init = " -reconfigure -backend=true -backend-config=subscription_id=${imagesettings_CE1.backend_subscriptionId} -backend-config=resource_group_name=${imagesettings_CE1.backend_rg} -backend-config=storage_account_name=${imagesettings_CE1.backend_storageaccount} -backend-config=container_name=${imagesettings_CE1.backend_containername} -backend-config=key=${TF_VAR_vm_name}.${TF_VAR_subscriptionId}.tfstate -backend-config=client_id=${Backend_ARM_CLIENT_ID} -backend-config=client_secret=${Backend_ARM_CLIENT_SECRET} -backend-config=tenant_id=${Backend_ARM_TENANT_ID}"
+                            env.ARM_SUBSCRIPTION_ID = "${imagesettings_CE1.subscriptionId}"
+                            env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                            env.cig_name = "${imagesettings_CE1.cig_name_LEVM}"
+                            env.cig_rg = "${imagesettings_CE1.cig_rg}"
+                            env.MainVar = "STD.Azure"
+                            env.sa_username = "${imagesettings_CE1.sa_username}"
+                            env.Archivecontainername = "${imagesettings_CE1.ARCHIVECONTAINERNAME}"
+                            env.Archivestorageaccountname = "${imagesettings_CE1.ARCHIVESTORAGEACCOUNTNAME}"
+                            // Update the environment variable
+                            env.image_version = imageVersion
+                            env.releaseIncrement = releaseIncrement
+                            env.candidate = candidate
+                            env.releaseType = ReleaseType
+                            env.Year = year
+                            env.previousReleaseType = PreviousReleaseType
+                            env.deleteimage_version = deleteimageVersion
+                        }
+                    }
+                }
+                echo "Release Type is ${releaseType}"
+                echo "candidate  is ${candidate}"
+                echo "releaseIncrement is ${releaseIncrement}"
+                echo "year is ${Year}"  // Use the shortened year variable
+                echo "Previous Release Type is ${previousReleaseType}"
+                echo "Release Sequence Per Release is ${PreviousReleaseVersion}"
+                echo "VM Name is: ${env.TF_VAR_vm_name}"
+                echo "imageVersion is: ${env.image_version}"
+                echo "Definition name is ${env.definition_name}"
+                echo "Delete Image Version Number : ${env.deleteimage_version}"
+                echo "Delete Image Release parameter value: ${params['DeleteImageRelease']}"
+                echo "Delete VM parameter value: ${params['DeleteMasterVM']}"
+                
+            }
+        }
+        stage('Terraform Init/Plan/Apply') {
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: "${env.Azure_Credential_ID}",
+                    //subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
+                    clientIdVariable: 'ARM_CLIENT_ID',
+                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'ARM_TENANT_ID'
+                ),
+                usernamePassword(credentialsId: '88884f54-a16a-4ca9-b4a6-23b33977b836', usernameVariable: 'TF_VAR_admin_username', passwordVariable: 'TF_VAR_admin_password')
+                ]) {
+                        dir("uatclientterraform") {
+                            sh """
+                                export HTTP_PROXY=${env.Proxy}
+                                terraform init ${env.TF_CLI_ARGS_init}
+                                terraform plan
+                                terraform apply -input=false --auto-approve
+                            """
+                            script {
+                                env.IP_Address = sh(returnStdout: true, script: "terraform output ip_address").trim()
+                            } 
+                        }  
+                    }
+
+            }
+        }
+        stage('VDI_STD_Azure_AVC_Cloud_LEClient_Normal') {
+            when {
+                expression { env.Release_Type == 'Normal' }
+            }
+            steps {
+                // Retrieve domain username and password from Jenkins credentials
+                withCredentials([usernamePassword(
+                    credentialsId: '6694963f-6b29-4d18-83d9-ca933158c926',
+                    usernameVariable: 'domain_username', 
+                    passwordVariable: 'domain_password'
+                )]) {
+                    ansibleTower(
+                        jobTemplate: 'AVC-Cloud-Packaging-LEClient',
+                        jobType: 'run',
+                        throwExceptionWhenFail: true,
+                        towerCredentialsId: 'cc5bfdd9-1b5c-4089-85f5-f5598cf2d767',
+                        towerLogLevel: 'false',
+                        towerServer: "${env.ANSIBLE}",
+                        extraVars: '''{
+
+                            "HostNameFact": $IP_Address,
+                            "ReleaseTypeFact": $releaseType,
+                            "CandidateFact": $candidate,
+                            "ReleaseIncrementFact": "${releaseIncrement}",
+                            "YearFact": "${Year}",
+                            "PlannedMajorSequenceFact": $previousReleaseType,
+                            "ReleaseSequencePerReleaseFact": "${PreviousReleaseVersion}",
+                            "sa_username": "${sa_username}",
+                            "Archivestorageaccountname": "${Archivestorageaccountname}",
+                            "Archivecontainername": "${Archivecontainername}"
+                        }'''
+
+                    )
+
+                }
+            }
+        }
+        stage('VDI_STD_Azure_AVC_Cloud_UATClient_Vanilla') {
+            when {
+                expression { env.Release_Type == 'Vanilla' }
+            }
+            steps {
+                // Retrieve domain username and password from Jenkins credentials
+                withCredentials([usernamePassword(
+                    credentialsId: '6694963f-6b29-4d18-83d9-ca933158c926',
+                    usernameVariable: 'domain_username', 
+                    passwordVariable: 'domain_password'
+                )]) {
+                    ansibleTower(
+                        jobTemplate: 'AVC-Cloud-Packaging-UATClient',
+                        jobType: 'run',
+                        throwExceptionWhenFail: true,
+                        towerCredentialsId: 'cc5bfdd9-1b5c-4089-85f5-f5598cf2d767',
+                        towerLogLevel: 'false',
+                        towerServer: "${env.ANSIBLE}",
+                        extraVars: '''{
+                            "HostNameFact": $IP_Address,
+                            "ReleaseTypeFact": $releaseType,
+                            "CandidateFact": $candidate,
+                            "ReleaseIncrementFact": "${releaseIncrement}",
+                            "YearFact": "${Year}",
+                            "PlannedMajorSequenceFact": $previousReleaseType,
+                            "ReleaseSequencePerReleaseFact": "${PreviousReleaseVersion}",
+                            "sa_username": "${sa_username}"
+                            "ARCHIVESTORAGEACCOUNTNAME": "${ARCHIVESTORAGEACCOUNTNAME}",
+                            "username": "${sa_username_le}",
+                            "password": ${QUALYS_PASSWORD}",
+                            "ARCHIVECONTAINERNAME": "${ARCHIVECONTAINERNAME}",
+                            "StorageAccountAccessKey": "${StorageAccountAccessKey}"
+                        }'''  
+                    )
+                }
+            }
+        }
+        stage('Create Azure Image Version'){
+            when {
+                expression { env.Release_Type == 'Normal' }
+            }
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: "${env.Azure_Credential_ID}",
+                    clientIdVariable: 'ARM_CLIENT_ID',
+                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'ARM_TENANT_ID'
+                )]) {
+                        script {
+                            //Use the variables provided by the withCredentials block and configs
+                            def azureClientId =  env.ARM_CLIENT_ID
+                            def azureClientSecret = env.ARM_CLIENT_SECRET
+                            def azureTenantId =  env.ARM_TENANT_ID
+                            def virtualMachineName = "${env.TF_VAR_vm_name}"
+                            def resourceGroupName = "${env.TF_VAR_resource_group_name}"
+                            def ARM_SUBSCRIPTION_ID = env.ARM_SUBSCRIPTION_ID
+                            def resource_ID = "/subscriptions/$ARM_SUBSCRIPTION_ID/resourceGroups/${resourceGroupName}/providers/Microsoft.Compute/virtualMachines/${virtualMachineName}"                  
+                            //Azure Loginusing the environment variables
+                            bat "az login --service-principal -u ${azureClientId} -p ${azureClientSecret} -t ${azureTenantId}"
+
+                            bat "az account set --subscription ${ARM_SUBSCRIPTION_ID}"
+
+                            //Deallocating the VM
+                            bat "az vm deallocate --name ${virtualMachineName} --resource-group ${resourceGroupName} --verbose"
+
+                            //Run the Azure CLI command to create the image version
+                            bat "az sig image-version create --resource-group ${env.cig_rg} --gallery-name ${env.cig_name} --gallery-image-definition ${env.definition_name} --gallery-image-version ${env.image_version} --target-regions francecentral germanywestcentral --replica-count 1 --virtual-machine ${resource_ID}"
+                        }
+                    }
+            }
+        }
+        stage('Delete Master VM'){
+            when {
+                expression { params.DeleteMasterVM == 'Delete' }
+            }
+            steps {
+                script {
+                    withCredentials([azureServicePrincipal(
+                        credentialsId: "${env.Azure_Credential_ID}",
+                        //subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
+                        clientIdVariable: 'ARM_CLIENT_ID',
+                        clientSecretVariable: 'ARM_CLIENT_SECRET',
+                        tenantIdVariable: 'ARM_TENANT_ID'
+                    )]) {
+                        dir("Powershell") {
+                            powershell '''
+
+                            # Continue with the Citrix Machine Catalog creation process
+                            Write-Host "Delete Master VM option is selected and Decommission is in progress"
+                            ./Delete-MasterVM.ps1 -clientId ${env:ARM_CLIENT_ID} -clientSecret ${env:ARM_CLIENT_SECRET} -tenantId ${env:ARM_TENANT_ID} -subscriptionId ${env:ARM_SUBSCRIPTION_ID} -resourceGroupName ${env:TF_VAR_resource_group_name} -MasterVMName ${env:TF_VAR_vm_name}
+
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        stage('Delete Image Release') {
+            when {
+                expression { params.DeleteImageRelease == 'Delete' }
+            }
+            steps {
+                script {
+
+                    // Continue with the Citrix Machine Catalog creation process
+                    withCredentials([azureServicePrincipal(
+                        credentialsId: "${env.Azure_Credential_ID}",
+                        clientIdVariable: 'ARM_CLIENT_ID',
+                        clientSecretVariable: 'ARM_CLIENT_SECRET',
+                        tenantIdVariable: 'ARM_TENANT_ID'
+                    )]) {
+                        dir("Powershell") {
+                            powershell '''
+                                Write-Host "Delete Master VM option is selected and Decommission is in progress"
+                                ./Delete-Image-Release.ps1 -clientId ${env:ARM_CLIENT_ID} -clientSecret ${env:ARM_CLIENT_SECRET} -tenantId ${env:ARM_TENANT_ID} -subscriptionId ${env:ARM_SUBSCRIPTION_ID} -resourceGroupName ${env:cig_rg} -galleryName ${env:cig_name} -imageName ${env:definition_name} -imageVersion ${env:deleteimage_version}
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            deleteDir()
+        }
+    }     
+}

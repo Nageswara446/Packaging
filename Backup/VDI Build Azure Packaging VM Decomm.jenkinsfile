@@ -1,0 +1,152 @@
+
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+def Ansible = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Ansible Tower Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower ' : 'none' }"
+
+//def agentName = "TerraformAgentAzure${JenkinsEnv == 'Prod' ? LocationToBuild.toLowerCase() : JenkinsEnv == 'Dev' ? 'dgwc1' : 'none'}"
+
+def agentName = "TerraformAgentAzurefc1"
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+
+    parameters {
+        string(name: 'VM_Name', defaultValue: '', description: 'Enter the VM Name for Decommissioning', trim: true)
+        string(name: 'NumberOfHours', defaultValue: '', description: 'Enter the number of hours before decommissioning', trim: true)
+        string(name: 'EmailAddress', defaultValue: '', description: 'Enter the email address')
+    }
+    environment {
+        LOCAL_CRED = credentials('3efdf34f-596b-41f1-93fd-6de6659046cc')
+        DOMAIN_CRED = credentials('6694963f-6b29-4d18-83d9-ca933158c926')        
+        JenkinsEnvVar = "${JenkinsEnv}"
+        VM_Name = "${params.VM_Name}"
+        VDI_BUILD_LOCATION = "CE2"
+        NumberOfHours = "${params.NumberOfHours}"
+        EmailAddress = "${params.EmailAddress}"
+    }
+    stages {
+        stage("Read Config"){
+            steps {
+                dir("configs") {
+                    script {
+                        def imagesettings = readJSON file: "${VDI_BUILD_LOCATION}-STD.json"
+                        // Update the environment variable
+                        env.TenantId = "${imagesettings.tenantId}"
+                        env.ARM_SUBSCRIPTION_ID = "${imagesettings.subscriptionId}"
+                        env.TF_VAR_resource_group_name = "${imagesettings.resource_group_name}"
+                        env.Azure_Credential_ID = "${imagesettings.credential}"
+                        env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                        env.MainVar = "STD.Azure"
+                    }
+                }
+            }
+        }
+        stage('Notify Before Modify Decommissioning Hours') {
+            steps {
+                script {
+                    echo "Decomm VM Name: ${env.VM_Name}"
+                    echo "Email-Address: ${env.EmailAddress}"
+                    echo "Hours: ${env.NumberOfHours}"
+
+                    // Retrieve NumberOfHours from environment
+                    def numberOfHours = env.NumberOfHours.toInteger()
+
+                    // Sleep for NumberOfHours - 8 hours
+                    def sleepDuration = Math.max(0, numberOfHours - 8) * 3600
+                    sleep time: sleepDuration, unit: 'SECONDS'
+
+                    def emailNotificationScript = """
+                        $smtpServer = "tmu-cs.mail.allianz"
+                        $smtpFrom = "wpsavcautomation@allianz.de"
+                        $smtpTo = "${env.EmailAddress}"
+                        $timestamp = (Get-Date).ToString("yyyy-MM-dd")
+                        $buildNumber = "${currentBuild.number}"
+                        $messageSubject = "Remainder - Packaging VM Decommission Build # $buildNumber"
+
+                        $Message = @"
+                        Dear User,
+                        
+                        "${env.VM_Name}" has been scheduled for decommission. If you need to extend the usage of the VM, please visit the Self-Service Decommission portal and search for your BuildNumber # $buildNumber. You can extend the usage by specifying the number of hours needed.
+
+                        If you have completed your work, please disregard the extension step.
+
+                        Regards,
+                        OneAVC Automation Team
+                        "@
+
+                        # Retrieve credentials from Jenkins
+                        withCredentials([usernamePassword(credentialsId: 'ebfe6e62-ce6b-4472-8e36-a654bf559bdf', usernameVariable: 'TMUUSERNAME', passwordVariable: 'TMUPASSWORD')]) {
+                            $UserName = $env.TMUUSERNAME
+                            $Password = $env.TMUPASSWORD | ConvertTo-SecureString -AsPlainText -Force
+                        }
+
+                        $credentials = New-Object System.Management.Automation.PSCredential($UserName, $Password)
+
+                        Send-MailMessage -SmtpServer $smtpServer -Credential $credentials -Port 587 -From $smtpFrom -To $smtpTo -Subject $messageSubject -Body $Message -BodyAsHtml -UseSsl -Priority High
+                    """
+
+                    bat "powershell -command \"$emailNotificationScript\""
+                }
+            }
+        }
+        stage('Modify Decommissioning Hours') {
+            steps {
+                script {
+                    // Check if the parameter is provided, otherwise use the default
+                    def userInput = input(
+                        id: 'userInput',
+                        message: 'Enter the modified decommissioning hours (Press "Proceed" to use default value):',
+                        parameters: [string(defaultValue: params.Hours ?: '${env.NumberOfHours}', description: 'Modified Hours', name: 'userInput', trim: true)]
+                    )
+
+                    // Sleep based on the modified decommissioning hours
+                    sleep time: userInput.toInteger() * 3600, unit: 'SECONDS'
+
+                    params.Hours = userInput
+
+                }
+            }
+        }
+        stage('Decommission VM from Azure') {
+            steps {
+                script {
+                    def decommissionHours = params.Hours.toInteger()
+                    // Sleep based on the modified decommissioning hours
+                    sleep time: decommissionHours * 3600, unit: 'SECONDS'
+
+                    withCredentials([
+                        azureServicePrincipal(
+                            credentialsId: "${env.Azure_Credential_ID}", 
+                            clientIdVariable: 'ARM_CLIENT_ID', 
+                            clientSecretVariable: 'ARM_CLIENT_SECRET', 
+                            tenantIdVariable: 'ARM_TENANT_ID'
+                        )
+                    ])
+
+                    def azureClientId =  env.ARM_CLIENT_ID
+                    def azureClientSecret = env.ARM_CLIENT_SECRET
+                    def azureTenantId =  env.ARM_TENANT_ID
+                    def resourceGroupName = "${env.TF_VAR_resource_group_name}"
+
+                    try {
+
+                        //Azure Loginusing the environment variables
+                        bat "az login --service-principal -u ${azureClientId} -p ${azureClientSecret} -t ${azureTenantId}"
+
+                        //Deallocating the VM
+                        bat "az vm deallocate --name ${env.VM_Name} --resource-group ${resourceGroupName} --verbose"
+
+                        //Run the Azure CLI command to create the image version
+                        bat "az vm delete --resource-group ${resourceGroupName} --name ${env.VM_Name} --yes"
+                        
+                    } catch (Exception e) {
+                        // Handle errors, log information, send notifications, etc.
+                        echo "Error during VM decommission: ${e.message}"
+                        error "Failed to decommission VM"
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,117 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'SNAP_RG', defaultValue: 'rg-vm-snapshots', description: 'Snapshot Resource Group')
+    }
+
+    triggers {
+        GenericTrigger(
+            genericVariables: [
+                [key: 'VM_NAME', value: '$.vmName']   // Extract vmName from webhook JSON
+            ],
+            causeString: 'Triggered by Webhook for VM $VM_NAME',
+            printContributedVariables: true,
+            printPostContent: true
+        )
+    }
+
+    stages {
+
+        stage('Validate Input') {
+            steps {
+                script {
+                    if (!env.VM_NAME) {
+                        error "VM name not received from webhook payload"
+                    }
+                    echo "Webhook triggered for VM: ${env.VM_NAME}"
+                }
+            }
+        }
+
+        stage('Azure Login & Create Snapshot') {
+            steps {
+                // Using Jenkins credentials binding
+                withCredentials([
+                    string(credentialsId: 'AZ_TENANT_ID', variable: 'AZ_TENANT'),
+                    string(credentialsId: 'AZ_SP_APPID', variable: 'AZ_APPID'),
+                    string(credentialsId: 'AZ_SP_PASSWORD', variable: 'AZ_SECRET'),
+                    string(credentialsId: 'AZ_SUBSCRIPTION_ID', variable: 'AZ_SUBSCRIPTION')
+                ]) {
+                    script {
+                        // Call PowerShell script and capture Owner email
+                        env.OWNER_EMAIL = powershell(
+                            script: """
+                                param (
+                                    [string]\$VMName,
+                                    [string]\$SnapshotResourceGroup,
+                                    [string]\$TenantId,
+                                    [string]\$AppId,
+                                    [string]\$Secret,
+                                    [string]\$SubscriptionId
+                                )
+
+                                # Azure login
+                                Connect-AzAccount -ServicePrincipal -Tenant \$TenantId `
+                                    -ApplicationId \$AppId `
+                                    -Credential (New-Object System.Management.Automation.PSCredential(\$AppId,(ConvertTo-SecureString \$Secret -AsPlainText -Force)))
+                                Set-AzContext -Subscription \$SubscriptionId | Out-Null
+
+                                # Import and run snapshot logic
+                                . .\\Create-AzSnapshot.ps1 -VMName \$VMName -SnapshotResourceGroup \$SnapshotResourceGroup
+                            """,
+                            returnStdout: true,
+                            scriptArgs: [env.VM_NAME, params.SNAP_RG, env.AZ_TENANT, env.AZ_APPID, env.AZ_SECRET, env.AZ_SUBSCRIPTION]
+                        ).trim()
+
+                        if (!env.OWNER_EMAIL) {
+                            error "Owner email not returned from snapshot script"
+                        }
+                        echo "Snapshot created. Owner email: ${env.OWNER_EMAIL}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            emailext(
+                to: "${env.OWNER_EMAIL}",
+                subject: "✅ Azure Snapshot Created - ${env.VM_NAME}",
+                body: """
+Hello,
+
+Your Azure VM snapshot has been created successfully.
+
+VM Name      : ${env.VM_NAME}
+Build Number : ${env.BUILD_NUMBER}
+Triggered By : Webhook
+
+The snapshot will expire in 3 days.
+
+Regards,
+Automation Team
+"""
+            )
+        }
+
+        failure {
+            emailext(
+                to: "cloud-ops@company.com",
+                subject: "❌ Azure Snapshot Failed - ${env.VM_NAME}",
+                body: """
+Snapshot creation failed.
+
+VM Name      : ${env.VM_NAME}
+Build Number : ${env.BUILD_NUMBER}
+
+Please check Jenkins logs.
+
+Regards,
+Automation Team
+"""
+            )
+        }
+    }
+}

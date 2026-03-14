@@ -1,0 +1,525 @@
+---
+- name:  Enter the Matrix to get hostname.
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  
+  tasks:
+    - name: add host to local inventory
+      add_host:
+        groups: VDI_STD_Master_Local
+        name: "{{ HostNameFact }}"
+
+- name:  VDI AVCDedicated Build playbook
+  hosts: VDI_STD_Master_Local
+  vars: 
+      ansible_connection: winrm
+      ansible_port: 5985
+      ansible_winrm_read_timeout_sec: 900
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_transport: credssp
+      reboot_timeout: 3000
+      OfficeSKU: "{{ OfficeSKU }}"
+      EmailAddress: "{{ EmailAddress }}"
+      domain_password: "{{ domain_password }}"
+      domain_username: "{{ domain_username }}"
+
+  gather_facts: false
+  tasks:
+    - name: Wait for WinRM
+      wait_for_connection:
+        delay: 10
+        timeout: 3000
+
+    - name: Ensure PackageInstallationTracker directory exists for /source/package
+      win_file:
+        path: C:\Temp\sources\Packages\AOClient\
+        state: directory
+
+    - name: Ensure PackageInstallationTracker directory exists for /CoreApps Packages
+      win_file:
+        path: C:\Temp\avc-apm\Package\CoreApps Packages\
+        state: directory
+
+    - name: Ensure PackageInstallationTracker directory exists for /source$
+      win_file:
+        path: C:\Temp\source$\SE2_Packages\
+        state: directory
+    
+    - name: Ensure PackageInstallationTracker directory exists for /source$
+      win_file:
+        path: C:\Temp\Allianz_packages\
+        state: directory
+
+    - name: Copy DSC Modules
+      win_copy:
+        src: "{{ item }}"
+        dest: C:\Program Files\WindowsPowerShell\Modules
+        remote_src: yes
+      loop:
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\HCL\DSC\'
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ domain_username }}"
+        ansible_become_pass: "{{ domain_password }}"
+
+    - name: Copy Folders
+      win_copy:
+        src: "{{ item }}"
+        dest: C:\Windows
+        remote_src: yes
+      loop:
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\Copy\AVC'
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\Copy\SysWOW64'
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ domain_username }}"
+        ansible_become_pass: "{{ domain_password }}"
+
+    - name: Add shortcut for VM Decommission
+      win_shell: C:\Windows\AVC\Scripts\USER\SelfServiceVMDecommission\ShortCut.ps1
+      ignore_errors: true
+
+################################################################################
+#Copy and installtion of packages in /source/packages directory
+################################################################################
+    - name: Ensure PackageInstallationTracker directory exists for /source/packages
+      win_file:
+        path: C:\Temp\sources\Packages\AOClient\
+        state: directory
+
+    - name: Copy packages from UNC path to temp from /source/packages
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Temp\sources\Packages\AOClient\'
+        remote_src: yes
+      loop:
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\Microsoft\Visual_Studio_Redistributables\C++_2012'
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\LanguagesAndOptionalFeatures'
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\Visual_Studio_Redistributables\2013'
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\Microsoft\Visual_Studio_Redistributables\C++_2015-2022'
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\Net6DesktopRuntime'
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\Citrix\VDA\2411\SingleSession'
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ domain_username }}"
+        ansible_become_pass: "{{ domain_password }}"
+
+    - name: Reboot before LanguagePack Install
+      win_reboot:
+        post_reboot_delay: 30  
+        reboot_timeout: 1500
+      
+    - name: Installation of LanguagePacks
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName         : 'Languagepacks'
+        Ensure              : 'Present'
+        Executable          : 'AVC_install.cmd'
+        Source              : 'C:\Temp\sources\Packages\AOClient\LanguagesAndOptionalFeatures\'
+        DetectionFilePath   : 'C:\Windows\Installer\install_languagepacks.log'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: Install Visual C++ 2012 x86;  AppId -  
+      win_dsc: 
+        resource_name: Package 
+        Name  : 'Microsoft Visual C++ 2012 x86 Additional Runtime - 11.0.61030' 
+        ProductId : ''
+        Arguments : '/Q'
+        Ensure :  'Present'
+        Path : 'C:\Temp\sources\Packages\AOClient\C++_2012\vcredist_x86.exe'
+        LogPath : 'c:\Windows\Installer\Visual_C++_2012_x86_Redist.log' 
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: Install Visual C++ 2013 x86;  AppId -  
+      win_dsc: 
+        resource_name: Package 
+        Name  : 'Microsoft Visual C++ 2013 x86 Additional Runtime - 12.0.40660' 
+        ProductId : ''
+        Arguments : '/Install /quiet /norestart'
+        Ensure :  'Present'
+        Path : 'C:\Temp\sources\Packages\AOClient\2013\vcredist_x86.exe'
+        LogPath : 'c:\Windows\Installer\Visual_C++_2013_x86_Redist.log' 
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: Install Visual C++ 2013 x64;  AppId -  
+      win_dsc: 
+        resource_name: Package 
+        Name  : 'Microsoft Visual C++ 2013 x64 Additional Runtime - 12.0.40660' 
+        ProductId : ''
+        Arguments : '/Install /quiet /norestart'
+        Ensure :  'Present'
+        Path : 'C:\Temp\sources\Packages\AOClient\2013\vcredist_x64.exe'
+        LogPath : 'c:\Windows\Installer\Visual_C++_2013_x64_Redist.log'
+      delegate_to: "{{ HostNameFact }}"
+   
+    - name: Install Visual C++ 2015_2022_x64_x86;  AppId -  1_C_plus_plus
+      win_dsc: 
+        resource_name: InstallerClass
+        PackageName : 'Install_Visual_C++_2015_2022'
+        Ensure :  'Present'
+        Executable : 'Install.cmd'
+        Source : 'C:\Temp\sources\Packages\AOClient\C++_2015-2022\'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: Install .Net6 Desktop Runtime x86;  AppId - ?
+      win_dsc: 
+        resource_name: InstallerClass
+        PackageName : 'Install_Net6DesktopRuntime'
+        Ensure :  'Present'
+        Executable : 'Install.cmd'
+        Source : 'C:\Temp\sources\Packages\AOClient\Net6DesktopRuntime\'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: Reboot Action before VDA Install
+      win_reboot:
+        post_reboot_delay: 30
+        reboot_timeout: 1500
+        
+    - name: Wait for WinRM
+      wait_for_connection:
+        delay: 10
+        timeout: 3000
+
+    - name: Citrix_Virtual_Desktop_Agent_Server_OS_2411;  AppId - ?; 
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName : 'VDAServerOS'
+        Ensure :  'Present'
+        Executable : 'VDAWorkstationSetup_2411_RAPPS.cmd'
+        Source : 'C:\Temp\sources\Packages\AOClient\SingleSession\'
+        DetectionFilePath : 'C:\Program Files\Citrix\Virtual Desktop Agent\BrokerAgent.exe'
+      delegate_to: "{{ HostNameFact }}"
+      
+    - name: BrokerAgent and citrix print service delay actions
+      win_dsc: 
+        resource_name: Registry 
+        Ensure      : 'Present'  
+        Key         : "{{ item }}"
+        ValueName   : 'DelayedAutostart'
+        ValueType   : 'DWORD'
+        ValueData   : '1'
+        Force       : true
+      loop:
+       - 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\BrokerAgent' 
+       - 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\cpsvc'
+
+#Delete the source directory and files bedore proceeding for the 'avc-apm'
+    - name: Clean up all files and folders in C:\Temp
+      win_file:
+        path: 'C:\Temp\{{ item }}'
+        state: absent
+      loop:
+         - 'sources'
+
+# # ###################################################################################################################################################################
+# # #    Office Package copy and installtion
+# # ###################################################################################################################################################################
+
+    - name: Ensure PackageInstallationTracker directory exists for /source/packages
+      win_file:
+        path: C:\Temp\sources\Packages\AOClient\
+        state: directory
+
+    - name: Copy OfficeM365 packages from UNC path to temp
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Temp\sources\Packages\AOClient\'
+        remote_src: yes
+      loop:
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\OfficeM365_DCC'
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ domain_username }}"
+        ansible_become_pass: "{{ domain_password }}" 
+
+    - name: Reboot Action before Office Install
+      win_reboot:
+        post_reboot_delay: 30
+        reboot_timeout: 1500
+        
+    - name: Wait for WinRM
+      wait_for_connection:
+        delay: 10
+        timeout: 3000
+
+    - name: MS_Office365 64bit (Build 16.0.17328.20612);  AppId - ?
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName : 'Office_365_64bit'
+        DetectionProductRegistryKeys : 'HKLM:\Software\Microsoft\Office\ClickToRun\Configuration'
+        Ensure :  'Present'
+        Executable : 'AVCDCC_64-bit_configure.cmd'
+        Source : 'C:\Temp\sources\Packages\AOClient\OfficeM365_DCC\'
+      delegate_to: "{{ HostNameFact }}"
+
+#Delete the source directory and files bedore proceeding for the 'avc-apm'
+    - name: Clean up all files and folders in C:\Temp
+      win_file:
+        path: 'C:\Temp\{{ item }}'
+        state: absent
+      loop:
+         - 'sources'
+
+################################################################################
+#Copy and installtion of packages in /source/packages directory
+################################################################################
+
+    - name: Ensure PackageInstallationTracker directory exists for /source/packages
+      win_file:
+        path: C:\Temp\sources\Packages\AOClient\
+        state: directory
+
+    - name: Copy packages from UNC path to temp from /source/packages
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Temp\sources\Packages\AOClient\'
+        remote_src: yes
+      loop:
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\674_Qualys_CloudAgent_5.6.0.20_PKG_R1'
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\CrowdStrike\Current'
+        - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\DedCAVCPOC\Teams_2.1'    
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ domain_username }}"
+        ansible_become_pass: "{{ domain_password }}"
+
+    - name: Copy packages from UNC path to temp from /CoreApps
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Temp\avc-apm\Package\CoreApps Packages\'
+        remote_src: yes
+      loop:
+        - '\\wwg00m.rootdom.net\AVC-APM\Package\CoreApps Packages\25220_Microsoft_OneDrive_24.070.0407.0003_PKG_R1\Package\25220_Microsoft_OneDrive_24.070.0407.0003_PKG_R1'
+        - '\\wwg00m.rootdom.net\AVC-APM\Package\CoreApps Packages\25833_Cisco_Webex_44.6.0.30115_PKG_R1\Package\25833_Cisco_Webex_44.6.0.30115_PKG_R1'
+        - '\\wwg00m.rootdom.net\avc-apm\Package\CoreApps Packages\25119_Adobe_AcrobatReaderDC_24.002.20759_PKG_R1\Package\25119_Adobe_AcrobatReaderDC_24.002.20759_PKG_R1'
+
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ domain_username }}"
+        ansible_become_pass: "{{ domain_password }}"
+
+    - name: Copy packages from UNC path to temp from /Allianz_packages
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Temp\Allianz_packages\'
+        remote_src: yes
+      loop:
+          #- '\\aalmcspar001.wwg00m.rootdom.net\Allianz_packages\Citrix\Citrix_Workspace\26683_Citrix_Workspace_24.2.1000.1016_PKG_R1'
+          - '\\AALMCSPAR001.wwg00m.rootdom.net\Allianz_packages\Allianz\AZCA Manager\03.00.6000'
+          - '\\AALMCSPAR001.wwg00m.rootdom.net\Allianz_packages\LogMein\11.9.0.14'
+          - '\\aalmcspar001.wwg00m.rootdom.net\Allianz_packages\Zscaler\Zscaler_Client_Connector\25303_Zscaler_Clientconnector_4.4.0.294_PKG_R2_W365'
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ domain_username }}"
+        ansible_become_pass: "{{ domain_password }}"
+
+    - name: 674_Qualys_CloudAgent_5.6.0.20_PKG_R1;  AppId - ?
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName         : '674_Qualys_CloudAgent_5.6.0.20_PKG_R1'
+        Ensure              : 'Present'
+        Executable          : 'Deploy-Application.exe'
+        Source              : 'C:\Temp\sources\Packages\AOClient\674_Qualys_CloudAgent_5.6.0.20_PKG_R1\'
+        DetectionProductRegistryKeys : 'HKLM:\SOFTWARE\AVC\Packages\674_Qualys_CloudAgent_5.6.0.20_PKG_R1'
+      delegate_to: "{{ HostNameFact }}"
+
+    
+    - name: Install Microsoft Teams 2.1 x64;  AppId - AppId - WAPP0025663
+      win_dsc: 
+        resource_name: InstallerClass
+        PackageName : 'Install_Teams_2.1'
+        Ensure :  'Present'
+        Executable : 'Install.cmd'
+        Source : 'C:\Temp\sources\Packages\AOClient\Teams_2.1\'
+      delegate_to: "{{ HostNameFact }}"
+
+
+    # - name: Citrix_Workspace_24.2.1000.1016; AppId - WAPP0025886
+    #   win_dsc:
+    #     resource_name: InstallerClass
+    #     PackageName : '26683_Citrix_Workspace_24.2.1000.1016_PKG_R1'
+    #     Ensure : 'Present'
+    #     Executable: 'Deploy-Application.exe'
+    #     Source : 'C:\Temp\Allianz_packages\26683_Citrix_Workspace_24.2.1000.1016_PKG_R1\'
+    #     DetectionProductRegistryKeys : 'HKLM:\SOFTWARE\AVC\Packages\26683_Citrix_Workspace_24.2.1000.1016_PKG_R1'
+    #   delegate_to: "{{ HostNameFact }}"
+
+    - name: 25262_Microsoft_OneDrive_24.070.0407.0003_PKG_R1;  AppId -  WAPP0025262
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName         : '25262_Microsoft_OneDrive_24.070.0407.0003_PKG_R1'
+        Ensure              : 'Present'
+        Executable          : 'Deploy-Application.exe'
+        Source              : 'C:\Temp\avc-apm\Package\CoreApps Packages\25220_Microsoft_OneDrive_24.070.0407.0003_PKG_R1\'
+        DetectionProductRegistryKeys : 'HKLM:\SOFTWARE\AVC\Packages\25220_Microsoft_OneDrive_24.070.0407.0003_PKG_R1'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: Cisco_Webex_44.6.0.30115;  AppId - WAPP0024480
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName         : 'Cisco_Webex_44.6.0.30115'
+        Ensure              : 'Present'
+        Executable          : 'Deploy-Application.exe'
+        Source              : 'C:\Temp\avc-apm\Package\CoreApps Packages\25833_Cisco_Webex_44.6.0.30115_PKG_R1\'
+        DetectionProductUninstallRegKeyValue         : '{D0AF510D-1DAA-5AE4-BCDA-3FDAB2AE84C8}'  
+        DetectionProductRegistryKeys : 'HKLM:\SOFTWARE\AVC\Packages\25833_Cisco_Webex_44.6.0.30115_PKG_R1'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: 22688_Allianz_AZCAManager_03.00.6000_PKG_R1;  AppId - WAPP0023055
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName         : '22688_Allianz_AZCAManager_03.00.6000_PKG_R1'
+        Ensure              : 'Present'
+        Executable          : 'Deploy-Application.exe'
+        Source              : 'C:\Temp\Allianz_packages\03.00.6000\'
+        DetectionProductRegistryKeys  : 'HKLM:\SOFTWARE\DXC\Packages\22688_Allianz_AZCAManager_03.00.6000_PKG_R1'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: Allianz_AZCAManager_LogFolder_Redirect
+      win_dsc: 
+        resource_name: Registry 
+        Ensure      : 'Present'
+        Key         : 'HKEY_LOCAL_MACHINE\SOFTWARE\ALLIANZ\AZCAManager'
+        ValueName   : 'LogFile'
+        ValueData   : 'C:\Windows\temp\azcamanage.net.log'
+        ValueType   : 'STRING'
+        Force       : true
+
+    - name: 18644_LogmeIn_CitrixgotoAssistCust_11.9.0.14_EU;  AppId - WAPP0018887
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName         : '18644_LogmeIn_CitrixgotoAssistCust_11.9.0.14_EU'
+        Ensure              : 'Present'
+        Executable          : 'Deploy-Application.exe'
+        Source              : 'C:\Temp\Allianz_packages\11.9.0.14\'
+        DetectionProductRegistryKeys : 'HKLM:\SOFTWARE\WOW6432Node\DXC\Packages\18644_LogmeIn_CitrixgotoAssistCust_11.9.0.14_PKG_R1'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: 25334_Adobe_AdobeReaderDC_24.002.20759;  AppId - WAPP0025334
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName         : '25334_Adobe_AdobeReaderDC_24.002.20759'
+        Ensure              : 'Present'
+        Executable          : 'Deploy-Application.exe'
+        Source              : 'C:\Temp\avc-apm\Package\CoreApps Packages\25119_Adobe_AcrobatReaderDC_24.002.20759_PKG_R1\'
+        DetectionProductRegistryKeys     : 'HKLM:\SOFTWARE\AVC\Packages\25119_Adobe_AcrobatReaderDC_24.002.20759_PKG_R1'
+        DetectionProductUninstallRegKeyValue         : '{AC76BA86-7AD7-FFFF-7B44-AC0F074E4100}'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: 25303_Zscaler_Clientconnector_4.4.0.294_PKG_R2;  AppId - #must be before Crodstrike installation
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName         : '25303_Zscaler_Clientconnector_4.4.0.294_PKG_R2'
+        Ensure              : 'Present'
+        Executable          : 'Deploy-Application.exe'
+        Source              : 'C:\Temp\avc-apm\Package\CoreApps Packages\25303_Zscaler_Clientconnector_4.4.0.294_PKG_R2_W365\'
+        DetectionProductRegistryKeys  : 'HKLM:\SOFTWARE\AVC\Packages\25303_Zscaler_Clientconnector_4.4.0.294_PKG_R2'
+      register: Zscaler
+      retries: 5
+      delay: 60
+      until: Zscaler is succeeded
+      delegate_to: "{{ HostNameFact }}"
+      ignore_errors: true
+
+    - name: Copy packages from UNC path to temp from /source$
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Temp\source$\SE2_Packages\'
+        remote_src: yes
+      loop:
+        - '\\aalmpspar001.wwg00m.rootdom.net\source$\SE2_Packages\AllianzFonts'
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ domain_username }}"
+        ansible_become_pass: "{{ domain_password }}"
+
+    - name: Install_Allianz_fonts;  AppId - 2160  # Needs to validate
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName : 'SE20024B_2160_AllianzFonts'       
+        Ensure :  'Present'
+        Executable : 'Install.bat'
+        Source : 'C:\Temp\source$\SE2_Packages\AllianzFonts\2160_AllianzFonts\'
+        DetectionFilePath : 'C:\Windows\Installer\AZ-ENG-AllianzFonts-1.0-AZF-R1_Install.log'
+      delegate_to: "{{ HostNameFact }}"
+   
+#Citrix Optimizer Tool
+    - name: CitrixOptimizerTool
+      win_shell: C:\Windows\AVC\CitrixOptimizerTool\CtxOptimizerEngine.ps1 -Source Citrix_Windows_11_2009_AOClient.xml -Mode execute
+      ignore_errors: true
+
+
+    - name: Set registry value for LogoffCheckSysModules
+      win_regedit:
+        path: 'HKLM:\SYSTEM\CurrentControlSet\Control\Citrix\wfshell\TWI'
+        name: 'LogoffCheckSysModules'
+        data: 'Analytics.exe,SelfService.exe,UpmUserMsg.exe,UiPathRemoteRuntime.exe, sbus.exe, sapcms.exe, fwcMgmt.exe, sbus.exe32, fwcMgmt.exe32, EnterpriseAgent.exe, EnterpriseAgent.exe32, adb.exe, adb.exe32, splwow64.exe, cs5ServiceManager.exe, cs6servicemanager.exe, Dserui.exe, taskhAppVShNotify.exe, taskhost.exe, rsshagent.exe, hpwuschd2.exe, deadem.exe, vmtoolsd.exe, buildnotification.exe, wfshell.exe, reg.exe, acroRD32.exe, robocopy.exe, winlogon.exe, PTIM.exe, csrss.exe, dwm.exe, LogonUI.exe, IdentityAgent.exe, OneDrive.exe, Microsoft.Sharepoint.exe'
+        type: string
+        state: present
+
+# Set SYSTEM Proxy for update section
+
+    - name: Set a proxy with a specific port with a bypass list
+      win_http_proxy:
+        proxy: zsc-fra.emea.lb.sec.allianz:8080
+
+    - name: Add Microsoft UWP application
+      win_shell: C:\Windows\AVC\Scripts\BUILD\AddUWPapps.ps1
+      ignore_errors: true
+    
+# Removal of SYSTEM proxy
+
+    - name: Remove any proxy settings
+      win_http_proxy:
+        proxy: ''
+        bypass: ''
+
+    ###     When we get new version of crowdstrike, just copy the file "WindowsSensor.LionLanner.exe" to the oneavc source path.     ####
+    ###     Do not replace the "install.cmd" file in oneavc source path as this is specificlly designed for Oneavc                   ####
+    ###     CrowdStrike 7.12 as part of PR009_24                                                                                     ####
+    - name: CrowdStrike 7.19; AppId - ?
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName         : 'CrowdStrike'  ## After installation of CrowdStrike, do not reboot.
+        Ensure              : 'Present'
+        Executable          : 'Install.cmd'
+        Source              : 'C:\Temp\sources\Packages\AOClient\Current\'
+        DetectionProductRegistryKeys     : 'HKLM:\SOFTWARE\CrowdStrike'
+      delegate_to: "{{ HostNameFact }}"
+
+#Scheduled Task for local admin rights
+    - name: Run ScheduledTask.ps1 securely
+      win_shell: C:\Windows\AVC\Scripts\BUILD\ScheduledTask.ps1 -AdminUser "{{ ansible_user }}" -AdminPassword "{{ ansible_password }}"
+      ignore_errors: true
+
+    - name: Clean up all files and folders in C:\Temp
+      win_file:
+        path: 'C:\Temp\{{ item }}'
+        state: absent
+      loop:
+        - 'Allianz_packages'
+        - 'avc-apm'
+        - 'sources'
+        - 'source$'
+
+
+
+
+

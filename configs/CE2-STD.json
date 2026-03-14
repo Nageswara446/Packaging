@@ -1,0 +1,17 @@
+{
+    "backend_subscriptionId": "e5e9a94d-5d39-47a4-a878-506a198a389b",
+    "backend_rg": "rgp-p-fc1-cloudavcinfra-tfstate",
+    "backend_storageaccount": "stapfc1avcinfratfstate",
+    "backend_containername" : "packagingvms",
+    "credential" : "81b51ae8-6afb-45eb-b2ed-5b626ea69281",    
+    "installshieldvmname": "VDE2PIS-",
+    "testmachinevmname": "VDE2PTM-",
+    "subnet_name": "sub-p-fc1-management-44-111-191-128-25",
+    "resource_group_name" : "rgp-p-fc1-avcce2shared-packagingVMs",
+    "vnet" : "vnet-p-fc1-avcce2shared-NetworkRG",
+    "vnet_rg" : "rg-p-fc1-avcce2shared-NetworkRG-networking",
+    "subscriptionId" : "752394dd-63b5-4b7c-8b71-0a4b119f8855",
+    "tenantId": "6e06e42d-6925-47c6-b9e7-9581c7ca302a",  
+    "local_techuser" : ""
+
+}

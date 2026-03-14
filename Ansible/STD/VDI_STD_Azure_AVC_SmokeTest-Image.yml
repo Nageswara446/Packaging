@@ -1,0 +1,244 @@
+- name: Enter the Matrix to get hostname.
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: add host to local inventory
+      add_host:
+        groups: VDI_STD_Master_Local
+        name: "{{ HostNameFact }}"
+
+- name: VDI AVCDedicated Build playbook
+  hosts: VDI_STD_Master_Local
+  vars:
+    ansible_connection: winrm
+    ansible_port: 5985
+    ansible_winrm_read_timeout_sec: 900
+    ansible_winrm_server_cert_validation: ignore
+    ansible_winrm_transport: credssp
+    reboot_timeout: 3000
+    OfficeSKU: "{{ OfficeSKU }}"
+    EmailAddress: "{{ EmailAddress }}"
+
+
+  gather_facts: false
+  tasks:
+    - name: Wait for WinRM
+      wait_for_connection:
+        delay: 10
+        timeout: 3000
+
+    - name: Ensure PackageInstallationTracker directory exists for /source/package
+      win_file:
+        path: C:\Temp\sources\Packages\
+        state: directory
+
+    # - name: Set PS Execution Policy
+    #   win_dsc:
+    #     resource_name: PowerShellExecutionPolicy
+    #     ExecutionPolicyScope: 'LocalMachine'
+    #     ExecutionPolicy: 'Unrestricted'
+
+
+    - name: Set PowerShell Execution Policy to Unrestricted
+      win_shell: |
+        Set-ExecutionPolicy Unrestricted -Scope LocalMachine -Force
+
+    - name: Copy DSC Modules
+      win_copy:
+        src: "{{ item }}"
+        dest: C:\Program Files\WindowsPowerShell\Modules
+        remote_src: yes
+      loop:
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\RAPPS\HCL\DSC\'
+      become: true
+      become_method: runas
+      become_flags: "logon_type=new_credentials logon_flags=netcredentials_only"
+      vars:
+        ansible_become_user: "{{ sa_username }}"
+        ansible_become_pass: "{{ access_key }}"
+
+    - name: Copy Folders
+      win_copy:
+        src: "{{ item }}"
+        dest: C:\Windows
+        remote_src: yes
+      loop:
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\RAPPS\Copy\AVC'
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\RAPPS\Copy\SysWOW64'
+      become: true
+      become_method: runas
+      become_flags: "logon_type=new_credentials logon_flags=netcredentials_only"
+      vars:
+        ansible_become_user: "{{ sa_username }}"
+        ansible_become_pass: "{{ access_key }}"
+
+    - name: Copy packages from UNC path to temp from /source/packages
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Temp\sources\Packages\'
+        remote_src: yes
+      loop:
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\Citrix\VDA\2411\SingleSession'
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\Qualys\674_Qualys_CloudAgent_5.6.0.20_PKG_R1'
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\CrowdStrike\Dedicated_Singlesession\3027_CrowdStrike_WindowsSensor_7.28.20008.0_PKG_R1'
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\Veridium\29360_VeridiumID_VeridiumADClient_3.7.4.0_PKG_R1_New'
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\Zscaler\28812_Zscaler_ClientConnector_4.5.0.352_PKG_R1_AO'
+      become: true
+      become_method: runas
+      become_flags: "logon_type=new_credentials logon_flags=netcredentials_only"
+      vars:
+        ansible_become_user: "{{ sa_username }}"
+        ansible_become_pass: "{{ access_key }}"
+
+    - name: Copy Intune-Sync.ps1 to TEMP
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Temp'
+        remote_src: yes
+      loop:
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\LE VM\'
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ sa_username }}"
+        ansible_become_pass: "{{ access_key }}"
+    
+    - name: Run Intune Script
+      win_shell: powershell.exe -File C:\Temp\CreateScheduledTask.ps1
+      
+    - name: Citrix_Virtual_Desktop_Agent_Server_OS_2411;  AppId - ?;
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName: "VDAServerOS"
+        Ensure: "Present"
+        Executable: "VDAWorkstationSetup_2411_AOClient.cmd"
+        Source: 'C:\Temp\sources\Packages\SingleSession\'
+        DetectionFilePath : 'C:\Program Files\Citrix\Virtual Desktop Agent\BrokerAgent.exe'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: CitrixOptimizerTool
+      win_shell: C:\Windows\AVC\CitrixOptimizerTool\CtxOptimizerEngine.ps1 -Source Citrix_Windows_11_2009_AOClient.xml -Mode execute
+      ignore_errors: true
+
+    - name: Set registry value for LogoffCheckSysModules
+      win_regedit:
+        path: 'HKLM:\SYSTEM\CurrentControlSet\Control\Citrix\wfshell\TWI'
+        name: "LogoffCheckSysModules"
+        data: "Analytics.exe,SelfService.exe,UpmUserMsg.exe,UiPathRemoteRuntime.exe, sbus.exe, sapcms.exe, fwcMgmt.exe, sbus.exe32, fwcMgmt.exe32, EnterpriseAgent.exe, EnterpriseAgent.exe32, adb.exe, adb.exe32, splwow64.exe, cs5ServiceManager.exe, cs6servicemanager.exe, Dserui.exe, taskhAppVShNotify.exe, taskhost.exe, rsshagent.exe, hpwuschd2.exe, deadem.exe, vmtoolsd.exe, buildnotification.exe, wfshell.exe, reg.exe, acroRD32.exe, robocopy.exe, winlogon.exe, PTIM.exe, csrss.exe, dwm.exe, LogonUI.exe, IdentityAgent.exe, OneDrive.exe, Microsoft.Sharepoint.exe"
+        type: string
+        state: present
+
+      #Start menu may stop https://support.citrix.com/s/article/CTX692398-start-menu-may-stop-responding-if-december-2024-or-newer-security-updates-installed-on-windows-11?language=en_US
+    - name: Add registry edit for Citrix Hooks
+      win_regedit:
+        path: 'HKLM:\SOFTWARE\Citrix\CtxHook\AppInit_DLLs\UWPBridgeHook\startmenuexperiencehost.exe\Citrix.Hooking.Uwp.dll\CtxWinUiXamlHook.dll\vccorlib140_app.dll'
+        name: "FilePathName"
+        data: 'C:\Windows\SystemApps\MicrosoftWindows.Client.Photon_cw5n1h2txyewy\vccorlib140_app.dll'
+        type: string
+        state: present
+        force: yes
+
+    - name: Add registry entry for VCRUNTIME140_1_APP.dll
+      win_regedit:
+        path: 'HKLM:\SOFTWARE\Citrix\CtxHook\AppInit_DLLs\UWPBridgeHook\startmenuexperiencehost.exe\Citrix.Hooking.Uwp.dll\CtxWinUiXamlHook.dll\VCRUNTIME140_1_APP.dll'
+        name: "FilePathName"
+        data: 'C:\Windows\SystemApps\MicrosoftWindows.Client.Photon_cw5n1h2txyewy\VCRUNTIME140_1_APP.dll'
+        type: string
+        state: present
+        force: yes
+
+    - name: 674_Qualys_CloudAgent_5.6.0.20_PKG_R1;  AppId - ?
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName: "674_Qualys_CloudAgent_5.6.0.20_PKG_R1"
+        Ensure: "Present"
+        Executable: "Deploy-Application.exe"
+        Source: 'C:\Temp\sources\Packages\674_Qualys_CloudAgent_5.6.0.20_PKG_R1\'
+        DetectionProductRegistryKeys: 'HKLM:\SOFTWARE\AVC\Packages\674_Qualys_CloudAgent_5.6.0.20_PKG_R1'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: CrowdStrike Windows Sensor 7.28; AppId - ? #latest
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName: "CrowdStrike Windows Sensor" ## After installation of CrowdStrike, do not reboot.
+        Ensure: "Present"
+        Executable: "Invoke-AppDeployToolkit.exe"
+        Source: 'C:\Temp\sources\Packages\3027_CrowdStrike_WindowsSensor_7.28.20008.0_PKG_R1\'
+        # DetectionProductUninstallRegKeyValue: "{a28e660a-e516-486f-9b6b-834d8e760ac1}"
+      delegate_to: "{{ HostNameFact }}"
+
+     #Veridium installation- Env Variable set
+    - name: Set CRC_DC environment variable at the machine level
+      win_environment:
+        name: "CRC_DC"
+        value: "E1"
+        level: "machine"
+
+    - name: VeridiumAD Client;
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName: "VeridiumAD Client"
+        Ensure: "Present"
+        Executable: "Deploy-Application.exe"
+        Source: 'C:\Temp\sources\Packages\29360_VeridiumID_VeridiumADClient_3.7.4.0_PKG_R1_New\'
+        #DetectionProductRegistryKeys     : 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{CFCBB2EE-E1FD-498E-B1C6-F8BABA12CADC}'
+        DetectionFilePath: 'C:\Program Files\VeridiumID\VeridiumAD\GetVeridiumLogonInfo.cmd'
+      delegate_to: "{{ HostNameFact }}"
+
+    - name: Copy Intune-Sync.ps1 to TEMP
+      win_copy:
+        src: "{{ item }}"
+        dest: 'C:\Program Files\WindowsPowerShell\Modules\'
+        remote_src: yes
+      loop:
+        - '\\rappsce1repo.file.core.windows.net\sources\Packages\LE VM\az.storage'
+      become: true
+      become_method: runas
+      become_flags: 'logon_type=new_credentials logon_flags=netcredentials_only'
+      vars:
+        ansible_become_user: "{{ sa_username }}"
+        ansible_become_pass: "{{ access_key }}"
+      
+    - name: Zscaler ;  AppId -
+      win_dsc:
+        resource_name: InstallerClass
+        PackageName: "28812_Zscaler_ClientConnector_4.5.0.352_PKG_R1"
+        Source: 'C:\Temp\sources\Packages\28812_Zscaler_ClientConnector_4.5.0.352_PKG_R1_AO\'
+        Executable: "Deploy-Application.exe"
+        Ensure: Present
+        DetectionProductUninstallRegKeyValue: "{1587F99E-730F-40F5-9222-DFEE25F64BED}"
+      delegate_to: "{{ HostNameFact }}"
+      ignore_errors: true
+  
+
+   
+    - name: Set manual WinHTTP proxy
+      win_http_proxy:
+        proxy: "svr001-e1-svr.zone2.proxy.allianz:8090"  # Replace with your proxy and port
+        bypass: 
+          - packageshareprod.blob.core.windows.net  # Optionally specify hosts to bypass the proxy
+        source: manual  # Set the proxy configuration source to manual
+
+
+  
+
+    - name: Baseline_VMscan PS to generate vulnerability report and place it in storage account
+      win_command: |
+        PowerShell -Command "& 'C:\Temp\Baseline_VMscan.ps1' -ARCHIVESTORAGEACCOUNTNAME '{{ Archivestorageaccountname }}' -username '{{ custom_username }}' -password '{{ custom_password }}' -ARCHIVECONTAINERNAME '{{ Archivecontainername }}' -StorageAccountAccessKey '{{ filehshare_access_key }}'"
+      
+    
+
+# ################# END OF APP INSTALL PART ########################
+
+    - name: Clean up all files and folders in C:\Temp
+      win_file:
+        path: 'C:\Temp\{{ item }}'
+        state: absent
+      loop:
+        - "Allianz_packages"
+        - "avc-apm"
+        - "sources"
+        - "source$"

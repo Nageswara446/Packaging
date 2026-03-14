@@ -1,0 +1,70 @@
+{
+    "backend_subscriptionId": "e5e9a94d-5d39-47a4-a878-506a198a389b",
+    "backend_rg": "rgp-p-fc1-cloudavcinfra-tfstate",
+    "backend_storageaccount": "stapfc1avcinfratfstate",
+    "backend_containername" : "packagingvms",
+    "credential" : "03b65dc3-61a6-41da-b426-96e10f93e367",  
+    "subnet_name": "sub-p-gwc1-management-44-79-87-0-24",
+    "subnet_name_new": "sub-p-gwc1-management-44-79-216-128-28",
+
+    "le_subnet": "sub-p-gwc1-management-44-77-171-208-28",
+    "resource_group_name" : "rgp-p-gwc1-avcpackagingao-packagingVMs",
+    "resource_group_name_new" : "rgp-p-gwc1-avcapmao-packagingVMs",
+
+    "aoclient_resourcegroup_name": "rgp-p-gwc1-avcpackagingao-AOClients",
+    "vnet" : "vnet-p-gwc1-avcpackagingao-NetworkRG",
+    "vnet_new": "vnet-p-gwc1-avcapmao-NetworkRG-ce1",
+
+    "vnet_rg" : "rg-p-gwc1-avcpackagingao-NetworkRG-networking",
+    "vnet_rg_new" :"rg-p-gwc1-avcapmao-NetworkRG-ce1-networking",
+
+    "local_techuser" : "",
+    "subscriptionId" : "a8f5ec46-78cf-4fba-a263-de3015560eff",
+    "subscriptionId_new" : "d2547ae8-ac44-4636-a2db-d2e6e9ecb98d",
+    
+    "installshieldvmname": "VDE1PIS-",
+    "testmachinevmname": "VDE1PTM-",
+    "smoketestvmname" : "VDE1ST-",
+    "vmname": "VDE1LE-",
+    "tenantId": "6e06e42d-6925-47c6-b9e7-9581c7ca302a",
+    "sa_username": "rappsce1repo",
+    "citrixcustomerid" : "q6nou2gd9o5n",
+    "definition_name_avcpackagingao" : "packagingvm",
+    "cig_rg_avcpackagingao" : "rgp-p-gwc1-avcpackagingao-Images",
+    "cig_name_avcpackagingao" : "WorkplacePlatformImages",
+    "iatclient_resourcegroup_name": "rgp-p-gwc1-avcpackagingao-UATClients",
+    "definition_name": "testmachine",
+    "IAT_CatalogName" : "2_TEST_AVCPACKAGINGAO_CE1IAT",
+    "cig_rg": "rgp-p-gwc1-avcpackagingao-Images",
+    "cig_rg_new":"rgp-p-gwc1-avcapmao-Images",
+    "cig_name": "WorkplacePlatformImages",
+    "definition_name_installshield": "packagingvm",
+    "packaging_subscriptionid": "a8f5ec46-78cf-4fba-a263-de3015560eff",
+    "packaging_subscriptionid_new": "d2547ae8-ac44-4636-a2db-d2e6e9ecb98d",
+
+    "vnet_adp" : "vnet-p-sa1-avcpackagingao-NetworkRG",
+    "subnet_adp" : "sub-p-sa1-management-44-80-22-0-25",
+    "vnet_rg_adp" : "rg-p-sa1-avcpackagingao-NetworkRG-networking",
+
+
+
+    "local_username": "install",
+    "credential_Ce1_Infra_terraform" : "AVCSP-CE1infra-terraform",
+    "backend_storageaccount_ce1" : "stapfc1avcinfratfstate",
+    "backend_containername_ce1" : "packagingvms",
+    "backend_storageaccount_rg_ce1" : "rgp-p-fc1-cloudavcinfra-tfstate",
+
+
+    "vm_clientid_Ce1_infra_terraform" : "abf156f8-3f06-419e-8e51-1ef6b6d25fcf",
+    "vm_tenantid_Ce1_infra_terraform" : "6e06e42d-6925-47c6-b9e7-9581c7ca302a",
+    
+    "tenantid_Ce1_infra_terraform": "6e06e42d-6925-47c6-b9e7-9581c7ca302a",
+    "clientid_Ce1_infra_terraform": "4019bac8-c717-4975-a03a-fb6684f19f1e",
+    "definition_name_LEVM": "LE_Client_PR",
+    "cig_name_LEVM": "WorkplacePlatformImages",
+    "ARCHIVECONTAINERNAME" : "qualysreport",
+    "ARCHIVESTORAGEACCOUNTNAME": "packageshareprod"
+
+
+
+}

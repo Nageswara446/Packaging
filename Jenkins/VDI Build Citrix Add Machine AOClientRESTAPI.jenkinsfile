@@ -1,0 +1,176 @@
+
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+def Ansible = 'Jenkins-AIP-DEV'
+
+def agentName = "sm623085-agent"
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+    parameters {
+        activeChoice choiceType: 'PT_RADIO', description: 'Select the Environment where Machines will be added', filterLength: 1, filterable: false, name: 'Environment', randomName: 'choice-parameter-2156883336707807', script: groovyScript(fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: 'return["Select the Environment where Machines will be added"]'], script: [classpath: [], oldScript: '', sandbox: false, script: '''return[
+            \'AOClient\',
+            \'IATClient\'
+        ]'''])
+        choice(name: 'Datacenter', choices: ['CE1', 'CE2', 'CAP1', 'CAP2', 'CNA1', 'CNA2'], description: 'Select the target datacenter')
+        string(name: 'UserEmails', defaultValue: '', description: 'Enter email address')
+
+        
+    }
+    environment {
+        JenkinsEnvVar = "${JenkinsEnv}"
+        VDI_BUILD_LOCATION_CE1 = "CE1"
+        ENVIRONMENT_VAR = ''
+        EmailAddresses = "${params.UserEmails}"
+        SelectedDatacenter = "${params.Datacenter}"
+    }
+    stages {
+        stage("Read Config") {
+            steps {
+                dir("configs") {
+                    script {
+                        def imagesettings_CE1 = readJSON file: "${VDI_BUILD_LOCATION_CE1}-STD.json"
+                        // Calculate the imageVersion based on Candidate_Version and Release_Version
+                        // Update the environment variable
+                        // Update the environment variable
+                        env.TenantId = "${imagesettings_CE1.tenantId}"
+                        env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                        env.Dev_CustomerId_CE1 = "${imagesettings_CE1.citrixcustomerid}"
+                        env.Azure_Credential_ID_CE1 = "${imagesettings_CE1.credential_Ce1_Infra_terraform}"
+                        env.PackagingSubscriptionId = "${imagesettings_CE1.packaging_subscriptionid}"
+                        env.Service_AccountId_CE1 = "${imagesettings_CE1.Service_AccountId}"
+                        env.IATClient_ResourceGroupName_CE1 = "${imagesettings_CE1.iatclient_resourcegroup_name}"
+                        env.IATClient_CatalogName_CE1 = "${imagesettings_CE1.IATClient_CatalogName}"
+                        env.AOClient_VDICount_CE1 = "${imagesettings_CE1.AOClient_VDICount}"
+                        env.IATClient_VDICount_CE1 = "${imagesettings_CE1.IATClient_VDICount}"
+                        env.IATClient_DeliveryGroupName_CE1 = "${imagesettings_CE1.IATClient_DeliveryGroupName}"
+                        env.VDI_Count = "${env.TotalMachines}"
+                        env.EmailAddresses = "${env.EmailAddresses}"
+                        env.CitrixIdpInstanceId = "${imagesettings_CE1.citrixidpinstanceid}"
+
+                        
+                    }
+                }
+            }
+        }
+        stage("Check Environment and Datacenter") {
+            steps {
+                script {
+                    if (params.Environment.isEmpty()) {
+                        echo "Environment not specified."
+                        autoCancelled = true
+                        error('Aborting the build')
+                    } else {
+                        echo "Environment total: ${params.Environment}"
+                        String[] Env_Array = params.Environment.split(',')
+                        for (SelectedEnvironment in Env_Array) {
+                            echo "DeployTO: ${SelectedEnvironment}"
+                        }
+                        ENVIRONMENT_VAR = Env_Array.join(',')
+                        echo "ENVIRONMENT_VAR : ${ENVIRONMENT_VAR}"
+                    }
+
+                }
+            }
+        }
+        stage("Execution Phase") {
+            parallel {
+                stage("Add Machines in AO Client Catalog") {
+                    when {
+                        expression { ENVIRONMENT_VAR.contains('AOClient') }
+                    }
+                    steps {
+                        script {
+                            withCredentials([
+                                string(credentialsId: 'citrixClientId', variable: 'citrixClientId'),
+                                string(credentialsId: 'citrixPassword', variable: 'citrixPassword'),
+                            ]) {
+                                dir("PowerShell") {
+                                    powershell '''
+                                ./Citrix-Add-Machine-AOClientRESTAPI.ps1 -CitrixCustomerId ${env:Dev_CustomerId_CE1} -citrixClientId ${env:citrixClientId} -citrixPassword ${env:citrixPassword} -Datacenter ${env:SelectedDatacenter} -EmailAddress ${env:EmailAddresses} -NamingSchemeType "Numeric"
+                                '''
+                                }
+                            }
+                        }
+                    }
+                }
+                stage("Add Machines in IAT Client Catalog") {
+                    when {
+                        expression { ENVIRONMENT_VAR.contains('IATClient') }
+                    }
+                    steps {
+                        script {
+                            sleep time: 10, unit: 'SECONDS'
+                            withCredentials([
+                                azureServicePrincipal(
+                                    credentialsId: "${env.Azure_Credential_ID_CE1}",
+                                    clientIdVariable: 'ARM_CLIENT_ID',
+                                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                                    tenantIdVariable: 'ARM_TENANT_ID'
+                                ),
+                                usernamePassword(credentialsId: '7a94d8a9-d71d-4875-ae97-e9901eabea8d', passwordVariable: 'citrixPassword', usernameVariable: 'citrixClientId'),
+                            ]) {
+                                dir("PowerShell") {
+                                    powershell '''
+                                ./Citrix-Add-Machine-IATClient.ps1 -CitrixCustomerId ${env:Dev_CustomerId_CE1} -citrixClientId ${env:citrixClientId} -citrixPassword ${env:citrixPassword} -CatalogName ${env:IATClient_CatalogName_CE1} -DeliveryGroupName ${env:IATClient_DeliveryGroupName_CE1} -Tenant ${env:ARM_TENANT_ID} -SubscriptionId ${env:PackagingSubscriptionId} -clientId ${env:ARM_CLIENT_ID} -clientSecret ${env:ARM_CLIENT_SECRET} -resourcegroupname ${env:IATClient_ResourceGroupName_CE1} -EmailAddress ${env:EmailAddresses} -CitrixIdpInstanceId ${env:CitrixIdpInstanceId}
+                                '''
+                                }
+                            }
+                        }
+                    }
+                }
+
+            }
+        }
+    }
+    post {
+        always {
+            script {
+            def emailList = env.EmailAddresses.split(/[,;]/).collect { it.trim() }.findAll { it }
+                if (currentBuild.result == 'SUCCESS') {
+                    if (params.Environment == "IATClient") {
+                        for (email in emailList) {
+                        // Email for IAT Machine
+                        emailext subject: "Build #${currentBuild.number}_IAT Machine - Success",
+                            body: """Dear User,
+
+    Your IAT virtual machine has been successfully provisioned and is ready for use.
+
+    🔗 **Access via Citrix DaaS:** https://Allianz.cloud.com  
+    Look for the desktop icon: **IAT Client**
+
+    📌 **Important:**  
+    Policies and core applications are deployed through **Microsoft Intune**.  
+    Please allow some buffer time after your first login for all configurations and apps to be installed correctly. 
+
+Best regards,  
+HCL Automation Team
+    """,
+                            to: "${email}, cc:extern.anand_prateek@allianz.de, cc:extern.allam_nageshwara@allianz.de, cc:extern.b-m_nitin@allianz.de, cc:extern.sakeeth_nudurupati-sai@allianz.de, cc:a-hcl-monitoring-frontend@allianz.com",
+                            from: "jenkins@allianz.de"
+                        }
+                    }
+                }
+        
+             else {
+                for (email in emailList){
+                    emailext subject: "Build #${currentBuild.number}_SelfService Packaging VM - Failed",
+                        body: """Hi Team,
+
+    Please investigate the failure.
+
+    Build was initiated by: ${email}
+
+    Regards,  
+    Automation Team
+    """,
+                            to: "${email}, cc:extern.anand_prateek@allianz.de, cc:extern.allam_nageshwara@allianz.de, cc:extern.b-m_nitin@allianz.de, cc:extern.sakeeth_nudurupati-sai@allianz.de, cc:a-hcl-monitoring-frontend@allianz.com",
+                        from: "jenkins@allianz.de"
+                }
+             }
+            }
+        }
+    }
+}
+

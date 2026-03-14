@@ -1,0 +1,130 @@
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+
+def agentName = "TerraformAgentAzurease1"
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+
+    environment {  
+        JenkinsEnvVar = "${JenkinsEnv}"
+        VDI_BUILD_LOCATION_CE1 = "CE1"
+    }
+
+    triggers {
+        GenericTrigger(
+            genericVariables: [
+                [key: 'vm_name', value: '$.vm_name']
+            ]
+            token: 'Snapshot',
+            printContributedVariables: true,
+            printPostContent: true
+        )
+    }
+
+    stages {
+        stage("Read Config") {
+            steps {
+                dir("configs") {
+                    script {
+                        def imagesettings_CE1 = readJSON file: "${VDI_BUILD_LOCATION_CE1}-STD.json"
+                        env.TenantId = "${imagesettings_CE1.tenantId}"
+                        env.PackagingSubscriptionId = "${imagesettings_CE1.packaging_subscriptionid}"
+                        env.Proxy = "${agentName == 'TerraformAgentAzurease1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurease1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                        env.Azure_Credential_ID_CE1 = "${imagesettings_CE1.credential}"
+                    }
+                }
+            }
+        }
+
+        stage('Validate Webhook Input') {
+            steps {
+                script {
+                    echo "vm_name = '${env.vm_name}'"
+
+                    if (!env.vm_name) {
+                        error "vm_name NOT received from webhook"
+                    }
+
+                    env.VM_NAME = env.vm_name
+                }
+
+                echo "Final VM_NAME = ${env.VM_NAME}"
+            }
+        }
+
+        stage('Azure Login & Create Snapshot') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal(
+                        credentialsId: "${env.Azure_Credential_ID_CE1}",
+                        clientIdVariable: 'ARM_CLIENT_ID',
+                        clientSecretVariable: 'ARM_CLIENT_SECRET',
+                        tenantIdVariable: 'ARM_TENANT_ID'
+                    )
+                ]) {
+                    script {
+                        dir("PowerShell") {
+                            powershell(
+                                script: """
+                                    ./Create-AzSnapshot.ps1 -VMName ${env:VM_NAME} -ClientId ${env:ARM_CLIENT_ID} -ClientSecret ${env:ARM_CLIENT_SECRET} -TenantId ${env:ARM_TENANT_ID} -SubscriptionId ${env:PackagingSubscriptionId}
+                                """,
+                                returnStatus: true
+                            )
+
+                            def props = readProperties file: "${env.WORKSPACE}/env.properties"
+                            env.OWNER_EMAIL = props['OWNER_EMAIL']
+
+                            if (!env.OWNER_EMAIL) {
+                                error "Owner email not returned from snapshot script"
+                            }
+                            echo "Snapshot created. Owner email: ${env.OWNER_EMAIL}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            emailext(
+                to: "${env.OWNER_EMAIL}",
+                subject: "Azure Snapshot Created - ${env.VM_NAME}",
+                body: """
+Hello,
+
+Your Azure VM snapshot has been created successfully.
+
+VM Name      : ${env.VM_NAME}
+Build Number : ${env.BUILD_NUMBER}
+Triggered By : Webhook
+
+The snapshot will expire in 3 days.
+
+Regards,
+Automation Team
+"""
+            )
+        }
+
+        failure {
+            emailext(
+                to: "extern.allam_nageshwara@allianz.de",
+                subject: "Azure Snapshot Failed - ${env.VM_NAME}",
+                body: """
+Snapshot creation failed.
+
+VM Name      : ${env.VM_NAME}
+Build Number : ${env.BUILD_NUMBER}
+
+Please check Jenkins logs.
+
+Regards,
+Automation Team
+"""
+            )
+        }
+    }
+}

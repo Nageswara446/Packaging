@@ -1,0 +1,95 @@
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+def Ansible = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Ansible Tower Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower ' : 'none' }"
+
+//def agentName = "TerraformAgentAzure${JenkinsEnv == 'Prod' ? LocationToBuild.toLowerCase() : JenkinsEnv == 'Dev' ? 'dgwc1' : 'none'}"
+
+def agentName = "TerraformAgentAzurefc1"
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+    environment {
+        LOCAL_CRED = credentials('3efdf34f-596b-41f1-93fd-6de6659046cc')
+        DOMAIN_CRED = credentials('6694963f-6b29-4d18-83d9-ca933158c926')        
+        JenkinsEnvVar = "${JenkinsEnv}"
+        ANSIBLE = "${Ansible}"
+        VDI_BUILD_LOCATION = "CE2"
+    }
+    stages {
+        stage("Read Config"){
+            steps {
+                dir("configs") {
+                    script {
+                        def imagesettings = readJSON file: "${VDI_BUILD_LOCATION}-STD.json"
+
+                        // Update the environment variable
+                        env.TF_VAR_vm_name = "${imagesettings.vmname}${currentBuild.number + 10000}"
+                        env.TF_VAR_subnet_name = "${imagesettings.subnet_name}"
+                        env.TF_VAR_resource_group_name = "${imagesettings.resource_group_name}"
+                        env.TF_VAR_vnet = "${imagesettings.vnet}"
+                        env.TF_VAR_vnet_rg = "${imagesettings.vnet_rg}"
+                        env.TF_VAR_ad_ou_location = "${imagesettings.ad_ou_location}"
+                        env.TF_VAR_ad_domain_name = "${imagesettings.ad_domain_name}"
+                        env.TF_VAR_subscriptionId = "${imagesettings.subscriptionId}"
+                        env.TenantId = "${imagesettings.tenantId}"
+                        env.TF_VAR_domain_techuser = "${imagesettings.domain_techuser}"
+                        env.TF_CLI_ARGS_init = " -reconfigure -backend=true -backend-config=subscription_id=${imagesettings.backend_subscriptionId} -backend-config=resource_group_name=${imagesettings.backend_rg} -backend-config=storage_account_name=${imagesettings.backend_storageaccount} -backend-config=container_name=${imagesettings.backend_containername} -backend-config=key=${TF_VAR_vm_name}.${TF_VAR_subscriptionId}.tfstate"
+                        env.ARM_SUBSCRIPTION_ID = "${imagesettings.subscriptionId}"
+                        env.Azure_Credential_ID = "${imagesettings.credential}"
+                        env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+
+                        env.MainVar = "STD.Azure"
+
+                    }
+                }
+                echo "VM Name is: $env.TF_VAR_vm_name"
+            }
+        }
+        stage('Terraform Init/Plan/Apply') {
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: "${env.Azure_Credential_ID}",
+                    //subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
+                    clientIdVariable: 'ARM_CLIENT_ID',
+                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'ARM_TENANT_ID'
+                ),
+                usernamePassword(credentialsId: '3efdf34f-596b-41f1-93fd-6de6659046cc', usernameVariable: 'TF_VAR_admin_username', passwordVariable: 'TF_VAR_admin_password'),
+                usernamePassword(credentialsId: '6694963f-6b29-4d18-83d9-ca933158c926', usernameVariable: 'TF_VAR_domain_username', passwordVariable: 'TF_VAR_domain_password')
+                ]) {
+                        echo "Subscription in use: $ARM_SUBSCRIPTION_ID"
+                        echo "Proxy in use: ${env.Proxy}"
+                        dir("terraform") {
+                            sh """
+                                export HTTP_PROXY=${env.Proxy}
+                                terraform init 
+                                terraform plan
+                                terraform apply -input=false --auto-approve
+                            """
+                            script {
+                                env.IP_Address = sh(returnStdout: true, script: "terraform output ip_address").trim()
+                            } 
+                        }  
+                    }
+
+            }
+        }  
+        stage('VDI_Build_Azure_Packaging') {
+            steps {
+                ansibleTower(
+                    jobTemplate: 'Packaging OneAVC',
+                    jobType: 'run',
+                    throwExceptionWhenFail: true,
+                    towerCredentialsId: 'bd0298aa-6f81-4e13-9ff7-3e4e3ab67dac',
+                    towerLogLevel: 'false',
+                    towerServer: "${env.ANSIBLE}",
+                    extraVars: '''{
+                        "HostNameFact": $IP_Address
+                    }''' 
+                )
+
+            }
+        }   
+    }     
+}

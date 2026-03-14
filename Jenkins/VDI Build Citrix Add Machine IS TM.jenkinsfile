@@ -1,0 +1,239 @@
+
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+//def Ansible = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Ansible Tower Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower ' : 'none' }"
+
+def agentName = "TerraformAgentAzurefc1"
+
+// Function to calculate expiration date while skipping weekends
+def calculateExpirationDate(Date startDate, int hoursToAdd) {
+    def calendar = Calendar.getInstance()
+    calendar.setTime(startDate)
+
+    // Skip weekends (Saturday and Sunday)
+    while (hoursToAdd > 0) {
+        calendar.add(Calendar.HOUR_OF_DAY, 1)
+
+        // Check if the current day is Saturday or Sunday and skip accordingly
+        if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY) {
+            calendar.add(Calendar.DAY_OF_MONTH, 2)
+        } else if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) {
+            calendar.add(Calendar.DAY_OF_MONTH, 1)
+        }
+        hoursToAdd--
+    }
+    return calendar.getTime()
+}
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+    parameters {
+        activeChoice(
+            choiceType: 'PT_RADIO',
+            description: 'Select the Machine Type to deploy from the Dropdown List',
+            filterLength: 1,
+            filterable: false,
+            name: 'MachineType',
+            randomName: 'choice-parameter-2156883336707708',
+            script: groovyScript(
+                fallbackScript: [classpath: [], oldScript: '', sandbox: true, script: 'return["Select a Machine Type from dropdown"]'],
+                script: [classpath: [], oldScript: '', sandbox: true, script: '''return[
+                    'Packaging-InstallShield',
+                    'Packaging-TestMachine'
+                ]''']
+            )
+        )
+
+        string(name: 'EmailAddress', defaultValue: '', description: 'Enter the email address', trim: true)
+
+        reactiveChoice(
+            choiceType: 'PT_SINGLE_SELECT',
+            description: 'Select the number of days required for VM usage',
+            name: 'PackageComplexity',
+            referencedParameters: 'MachineType',
+            script: groovyScript(
+                fallbackScript: [classpath: [], oldScript: '', sandbox: true, script: 'return["Simple (1 day)", "Medium (2 day)", "Complex (3 day)", "InstallShield (10 days)"]'],
+                script: [classpath: [], oldScript: '', sandbox: true, script: '''
+                    if (MachineType && MachineType.equalsIgnoreCase("Packaging-InstallShield")) {
+                        return ["InstallShield (10 days)"]
+                    } else {
+                        return ["Simple (1 day)", "Medium (2 day)", "Complex (3 day)"]
+                    }
+                ''']
+            )
+        )
+    }
+    environment {
+        JenkinsEnvVar = "${JenkinsEnv}"
+        VDI_BUILD_LOCATION_CE1 = "CE1" // Define the missing property
+        MachineType = "${params.MachineType}"
+        EmailAddress = "${params.EmailAddress}"
+    }
+    stages {
+        stage("Read Config") {
+            steps {
+                dir("configs") {
+                    script {
+                        def imagesettings_CE1 = readJSON file: "${VDI_BUILD_LOCATION_CE1}-STD.json"
+                        env.TenantId = "${imagesettings_CE1.tenantId}"
+                        env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                        env.Dev_CustomerId_CE1 = "${imagesettings_CE1.Dev_CustomerId}"
+                        env.Azure_Credential_ID_CE1 = "${imagesettings_CE1.credential}"
+                        env.PackagingSubscriptionId = "${imagesettings_CE1.packaging_subscriptionid}"
+                        env.AOClient_CatalogName_CE1 = "${imagesettings_CE1.AOClient_CatalogName}"
+                        env.Service_AccountId_CE1 = "${imagesettings_CE1.Service_AccountId}"
+                        env.VDI_Count = "${imagesettings_CE1.TMClient_VDICount}"
+                        env.EmailAddress = "${env.EmailAddress}"
+                        env.CitrixIdpInstanceId = "${imagesettings_CE1.citrixidpinstanceid}"
+                        
+                        // Select resource group, catalog, and delivery group based on machine type
+                        if (params.MachineType == "Packaging-InstallShield") {
+                            env.ResourceGroupName = "${imagesettings_CE1.isclient_resourcegroup_name}"
+                            env.CatalogName = "${imagesettings_CE1.ISClient_CatalogName}"
+                            env.DeliveryGroupName = "${imagesettings_CE1.ISClient_DeliveryGroupName}"
+                        } else if (params.MachineType == "Packaging-TestMachine") {
+                            env.ResourceGroupName = "${imagesettings_CE1.tmclient_resourcegroup_name}"
+                            env.CatalogName = "${imagesettings_CE1.TMClient_CatalogName}"
+                            env.DeliveryGroupName = "${imagesettings_CE1.TMClient_DeliveryGroupName}"
+                        } else {
+                            error "Unsupported MachineType: ${params.MachineType}"
+                        }
+
+                        echo "Resource Group: ${env.ResourceGroupName}"
+                        echo "Catalog Name: ${env.CatalogName}"
+                        echo "Delivery Group Name: ${env.DeliveryGroupName}"
+
+                        echo "Selected Package Complexity: ${params.PackageComplexity}"
+
+                        def currentDate = new Date()
+                        def hoursToAdd = 0
+                        if (params.PackageComplexity == 'Simple (1 day)') {
+                            hoursToAdd = 24
+                        } else if (params.PackageComplexity == 'Medium (2 day)') {
+                            hoursToAdd = 48
+                        } else if (params.PackageComplexity == 'Complex (3 day)') {
+                            hoursToAdd = 72
+                        } else if (params.PackageComplexity == 'InstallShield (10 days)') {
+                            hoursToAdd = 240
+                        } 
+                        def expirationDate = calculateExpirationDate(currentDate, hoursToAdd)
+
+                        def DefinitionName
+                        if (params.MachineType == "Packaging-InstallShield") {
+                            DefinitionName = "packagingvm"
+                        } else if (params.MachineType == "Packaging-TestMachine") {
+                            DefinitionName = "testmachine"
+                        } else {
+                            error "Unsupported MachineType for DefinitionName: ${params.MachineType}"
+                        }
+
+                        env.DefinitionName = "${DefinitionName}"
+
+                        echo "Current Date: ${currentDate}"
+                        echo "Expiration Date: ${expirationDate}"
+                        echo "DefinitionName: ${DefinitionName}"
+
+                        env.EXPIRATION_DATE = expirationDate.format("yyyy-MM-dd")
+                        env.ExpirationDate = env.EXPIRATION_DATE
+                    }
+                }
+            }
+        }
+        stage("Add Machines in InstallShield or Test Machine Client Catalog") {
+            steps {
+                script {
+                    withCredentials([
+                        azureServicePrincipal(
+                            credentialsId: "${env.Azure_Credential_ID_CE1}",
+                            clientIdVariable: 'ARM_CLIENT_ID',
+                            clientSecretVariable: 'ARM_CLIENT_SECRET',
+                            tenantIdVariable: 'ARM_TENANT_ID'
+                        ),
+                        usernamePassword(credentialsId: '7a94d8a9-d71d-4875-ae97-e9901eabea8d', passwordVariable: 'citrixPassword', usernameVariable: 'citrixClientId'),
+                    ]) {
+                        dir("PowerShell") {
+                            powershell '''
+                        ./Citrix-Add-Machine-PackagingVM_IS_TM.ps1 -CitrixCustomerId ${env:Dev_CustomerId_CE1} -citrixClientId ${env:citrixClientId} -citrixPassword ${env:citrixPassword} -CatalogName ${env:CatalogName} -VDICount ${env:VDI_Count} -DeliveryGroupName ${env:DeliveryGroupName} -Tenant ${env:ARM_TENANT_ID} -SubscriptionId ${env:PackagingSubscriptionId} -clientId ${env:ARM_CLIENT_ID} -clientSecret ${env:ARM_CLIENT_SECRET} -resourcegroupname ${env:ResourceGroupName} -EmailAddress ${env:EmailAddress} -CitrixIdpInstanceId ${env:CitrixIdpInstanceId} -expirationDate ${env:ExpirationDate}
+                        '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                def vmName = readFile("${env.WORKSPACE}/vmName.txt").trim()
+                def vmIP = readFile("${env.WORKSPACE}/vmIP.txt").trim()
+                echo "VM name received from PowerShell: ${vmName}"
+                echo "VM name received from PowerShell: ${vmIP}"
+
+                if (currentBuild.result == 'SUCCESS') {
+                    if (params.MachineType == "Packaging-InstallShield") {
+                        // Email for InstallShield machines
+                        emailext subject: "Build #${currentBuild.number}_InstallShield VM - Success",
+                            body: """Dear User,
+
+    Your InstallShield Packaging virtual machine has been successfully provisioned.
+
+    🖥️ **VM Name:** ${vmName}
+    🌐 **Private IP Address:** ${vmIP}  
+    📆 **Expiration Date:** ${env.ExpirationDate}
+
+    📌 **Important:**  
+    This VM is tailored for software packaging using InstallShield.  
+    There is **no change in how you access the VM** — MSTSC (Remote Desktop) will continue to work as usual.
+
+    Best Regards,  
+    HCL Automation Team
+    """,
+                            to: "${env.EmailAddress}",
+                            from: "jenkins@allianz.de"
+                    } else if (params.MachineType == "Packaging-TestMachine") {
+                        // Email for Test Machine
+                        emailext subject: "Build #${currentBuild.number}_Packaging Test Machine - Success",
+                            body: """Dear User,
+
+    The virtual machine has been successfully created and is ready for your testing needs.
+
+    🔗 **Access:** Log in via Citrix DaaS using the link:  
+    https://Allianz.cloud.com  
+    and select the desktop icon: **Test Machine**
+
+    📆 **Expiration Date:** ${env.ExpirationDate}
+
+    Please reach out to the Citrix support team in case of any access issues.
+
+    Regards,  
+    HCL Automation Team
+    """,
+                            to: "${env.EmailAddress}",
+                            from: "jenkins@allianz.de"
+                    }
+                } else {
+                    emailext subject: "Build #${currentBuild.number}_SelfService Packaging VM - Failed",
+                        body: """Hi Team,
+
+    The build failed for the following VM(s):  
+    ${vmName}
+
+    Please investigate the failure.
+
+    Build was initiated by: ${env.EmailAddress}
+
+    Regards,  
+    Automation Team
+    """,
+                        to: "${env.EmailAddress}, extern.b-m_nitin@allianz.de, extern.sakeeth_nudurupati-sai@allianz.de",
+                        from: "jenkins@allianz.de"
+                }
+            }
+        }
+    }
+}
+
+
+
+ 

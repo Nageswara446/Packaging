@@ -1,0 +1,232 @@
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+def Ansible = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Ansible Tower Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower ' : 'none' }"
+
+//def agentName = "TerraformAgentAzure${JenkinsEnv == 'Prod' ? LocationToBuild.toLowerCase() : JenkinsEnv == 'Dev' ? 'dgwc1' : 'none'}"
+
+def agentName = "TerraformAgentAzurefc1"
+
+// Function to calculate expiration date while skipping weekends
+def calculateExpirationDate(Date startDate, int hoursToAdd) {
+    def calendar = Calendar.getInstance()
+    calendar.setTime(startDate)
+
+    // Skip weekends (Saturday and Sunday)
+    while (hoursToAdd > 0) {
+        calendar.add(Calendar.HOUR_OF_DAY, 1)
+        
+        // Check if the current day is Saturday or Sunday and skip accordingly
+        if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY) {
+            calendar.add(Calendar.DAY_OF_MONTH, 2)
+        } else if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) {
+            calendar.add(Calendar.DAY_OF_MONTH, 1)
+        }
+        
+        hoursToAdd--
+    }
+
+    return calendar.getTime()
+}
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+    parameters {
+        activeChoice choiceType: 'PT_RADIO', description: 'Select the Machine Type to deploy from the Dropdown List', filterLength: 1, filterable: false, name: 'MachineType', randomName: 'choice-parameter-2156883336707708', script: groovyScript(fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: 'return["Select a Machine Type from dropdown"]'], script: [classpath: [], oldScript: '', sandbox: false, script: '''return[
+            \'OneAVC\',
+            \'AVC\',
+            \'AMC\'
+        ]'''])
+
+        activeChoice choiceType: 'PT_RADIO', description: 'Select for AOClient', name: 'AOClient', script: groovyScript(fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: 'return["Select for AOMachine"]'], script: [classpath: [], oldScript: '', sandbox: false, script: '''return ["Yes", "No"]'''])
+
+        reactiveChoice choiceType: 'PT_CHECKBOX', description: 'Select whether to add Admin Rights', filterLength: 1, filterable: false, name: 'AdminRights', randomName: 'choice-parameter-2156883336707710', referencedParameters: 'AOClient', script: groovyScript(fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: 'return["Select whether to add Admin Rights"]'], script: [classpath: [], oldScript: '', sandbox: false, script: '''if (AOClient.equalsIgnoreCase("Yes")){
+            return ["Add:selected"]
+        } else {
+            return[]
+        }'''])
+
+        reactiveChoice choiceType: 'PT_SINGLE_SELECT', description: 'Select the Packaging Tool to deploy from the Dropdown List', filterLength: 1, filterable: false, name: 'PackagingTool', randomName: 'choice-parameter-2156883474310442', referencedParameters: 'MachineType,AOClient', script: groovyScript(fallbackScript: [classpath: [], oldScript: '', sandbox: false, script: 'return["Select a Packaging Tool from dropdown"]'], script: [classpath: [], oldScript: '', sandbox: false, script: '''if (MachineType.equalsIgnoreCase("OneAVC") && AOClient.equalsIgnoreCase("No")){
+            return ["FlexApp", "InstallShield"]
+        } else if (MachineType.equalsIgnoreCase("AVC") && AOClient.equalsIgnoreCase("No")) {
+            return ["FlexApp", "InstallShield", "App-V"]
+        } else if (MachineType.equalsIgnoreCase("AMC") && AOClient.equalsIgnoreCase("No")){
+            return ["FlexApp", "InstallShield"]
+        } else {
+            return["Select a Packaging Tool from dropdown"]
+        }'''])
+
+        choice choices: ['True', 'False'], description: 'Select whether to install MS Office from the Dropdown List', name: 'OfficeInstalled'
+        string(name: 'EmailAddress', defaultValue: '', description: 'Enter the email address', trim: true)
+        choice choices: ['Simple (1 day)', 'Medium (2 day)', 'Complex (3 day)'], description: 'Select the number of days required for VM usage', name: 'PackageComplexity'
+    }
+    environment {
+        LOCAL_CRED = credentials('3efdf34f-596b-41f1-93fd-6de6659046cc')
+        DOMAIN_CRED = credentials('6694963f-6b29-4d18-83d9-ca933158c926')        
+        JenkinsEnvVar = "${JenkinsEnv}"
+        ANSIBLE = "${Ansible}"
+        VDI_BUILD_LOCATION = "CE1"
+        MachineType = "${params.MachineType}"
+        OfficeSKU = "${params.OfficeInstalled}"
+        PackagingTool = "${params.PackagingTool}"
+        EmailAddress = "${params.EmailAddress}"
+        AOClient = "${params.AOClient}"
+        AdminRights = "${params.AdminRights}"
+    }
+    stages {
+        stage("Read Config"){
+            steps {
+                dir("configs") {
+                    script {
+                        def imagesettings = readJSON file: "${VDI_BUILD_LOCATION}-STD.json"
+
+                        // Update the environment variable
+                        env.TF_VAR_vm_name = "${imagesettings.vmname}${currentBuild.number + 10000}"
+                        env.TF_VAR_subnet_name = "${imagesettings.subnet_name}"
+                        env.TF_VAR_resource_group_name = "${imagesettings.resource_group_name}"
+                        env.TF_VAR_vnet = "${imagesettings.vnet}"
+                        env.TF_VAR_vnet_rg = "${imagesettings.vnet_rg}"
+                        env.TF_VAR_ad_ou_location = "${imagesettings.ad_ou_location}"
+                        env.TF_VAR_ad_domain_name = "${imagesettings.ad_domain_name}"
+                        env.TF_VAR_subscriptionId = "${imagesettings.subscriptionId}"
+                        env.TenantId = "${imagesettings.tenantId}"
+                        env.TF_VAR_domain_techuser = "${imagesettings.domain_techuser}"
+                        env.TF_CLI_ARGS_init = " -reconfigure -backend=true -backend-config=subscription_id=${imagesettings.backend_subscriptionId} -backend-config=resource_group_name=${imagesettings.backend_rg} -backend-config=storage_account_name=${imagesettings.backend_storageaccount} -backend-config=container_name=${imagesettings.backend_containername} -backend-config=key=${TF_VAR_vm_name}.${TF_VAR_subscriptionId}.tfstate"
+                        env.ARM_SUBSCRIPTION_ID = "${imagesettings.subscriptionId}"
+                        env.Azure_Credential_ID = "${imagesettings.credential}"
+                        env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                        env.TF_VAR_Machine_Type = "${env.MachineType}"
+                        env.TF_VAR_EmailAddress = "${env.EmailAddress}"
+                        env.MainVar = "STD.Azure"
+
+                        echo "Selected Package Complexity: ${params.PackageComplexity}"
+
+                        echo "Admin Rights: ${params.AdminRights}"
+
+                        // Add logic for setting expiration date based on PackageComplexity
+                        def currentDate = new Date()
+
+                        // Set expiration based on PackageComplexity
+                        def hoursToAdd = 0
+                        if (params.PackageComplexity == 'Simple (1 day)') {
+                            hoursToAdd = 24
+                        } else if (params.PackageComplexity == 'Medium (2 day)') {
+                            hoursToAdd = 48
+                        } else if (params.PackageComplexity == 'Complex (3 day)') {
+                            hoursToAdd = 72
+                        }
+
+                        // Calculate new expiration date excluding weekends
+                        def expirationDate = calculateExpirationDate(currentDate, hoursToAdd)
+
+                        // Use expirationDate as needed in your pipeline
+                        echo "Current Date: ${currentDate}"
+                        echo "Expiration Date: ${expirationDate}"
+
+                        // Format expiration date as "yyyy-MM-dd HH:mm:ss"
+                        env.EXPIRATION_DATE = expirationDate.format("yyyy-MM-dd")
+                        echo "Formatted Expiration Date: ${env.EXPIRATION_DATE}"
+
+                        env.TF_VAR_ExpirationDate = "${env.EXPIRATION_DATE}"
+
+                    }
+                }
+                echo "VM Name is: $env.TF_VAR_vm_name"
+                echo "OfficeSKU is: ${env.OfficeSKU}"
+                echo "PackagingTool is: ${env.PackagingTool}"
+                echo "MachineType is : ${env.TF_VAR_Machine_Type}"
+            }
+        }
+        stage('Terraform Init/Plan/Apply') {
+            steps {
+                withCredentials([azureServicePrincipal(
+                    credentialsId: "${env.Azure_Credential_ID}",
+                    //subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
+                    clientIdVariable: 'ARM_CLIENT_ID',
+                    clientSecretVariable: 'ARM_CLIENT_SECRET',
+                    tenantIdVariable: 'ARM_TENANT_ID'
+                ),
+                usernamePassword(credentialsId: '3efdf34f-596b-41f1-93fd-6de6659046cc', usernameVariable: 'TF_VAR_admin_username', passwordVariable: 'TF_VAR_admin_password'),
+                usernamePassword(credentialsId: '6694963f-6b29-4d18-83d9-ca933158c926', usernameVariable: 'TF_VAR_domain_username', passwordVariable: 'TF_VAR_domain_password')
+                ]) {
+                        echo "Subscription in use: $ARM_SUBSCRIPTION_ID"
+                        echo "Proxy in use: ${env.Proxy}"
+                        dir("terraform") {
+                            sh """
+                                set HTTP_PROXY=${env.Proxy}
+                                terraform init 
+                                terraform plan
+                                terraform apply -input=false --auto-approve
+                            """
+                            script {
+                                env.IP_Address = sh(returnStdout: true, script: "terraform output ip_address").trim()
+                            } 
+                        }  
+                    }
+
+            }
+        }
+        stage('VDI_Build_Azure_Packaging') {
+            steps {
+                script {
+                    echo "Debug: HostNameFact is set to '$IP_Address'"
+                    echo "Debug: OfficeSKU is set to '$OfficeSKU'"
+                    echo "Debug: PackagingTool is set to '$PackagingTool'"
+                }
+
+                ansibleTower(
+                    jobTemplate: 'Packaging OneAVC',
+                    jobType: 'run',
+                    throwExceptionWhenFail: true,
+                    towerCredentialsId: 'bd0298aa-6f81-4e13-9ff7-3e4e3ab67dac',
+                    towerLogLevel: 'false',
+                    towerServer: "${env.ANSIBLE}",
+                    extraVars: '''{
+                        "HostNameFact": $IP_Address,
+                        "OfficeSKU": $OfficeSKU,
+                        "PackagingTool": $PackagingTool,
+                        "AOClient": $AOClient,
+                        "AdminRights": $AdminRights,
+                        "EmailAddress": $EmailAddress
+                    }''' 
+                )
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                // Check the build result
+                if (currentBuild.result == 'SUCCESS') {
+                    // Send success notification to the specified user
+                    emailext subject: "Build #${currentBuild.number}_SelfService Packaging VM - Success",
+                        body: """Dear User,
+
+        "$env.TF_VAR_vm_name" has been created, and the IP address is $env.IP_Address.
+
+        Regards,
+        OneAVC Automation Team
+        """,
+                        to: "${env.EmailAddress}",
+                        from: "jenkins@allianz.de"
+                } else {
+                    // Send failure notification to the developer's email address
+                    emailext subject: "Build #${currentBuild.number}_SelfService Packaging VM - Failed",
+                        body: """Hi Team,
+
+        The build failed for "$env.TF_VAR_vm_name". Please investigate and take appropriate action.
+        Build initated by "${env.EmailAddress}".
+
+        Regards,
+        OneAVC Automation Team
+        """,
+                        to: "${env.EmailAddress}, extern.allam_nageshwara@allianz.de", // Replace with the developer's email address
+                        from: "jenkins@allianz.de"
+                }
+            }
+        }
+    }
+}
+
+
+

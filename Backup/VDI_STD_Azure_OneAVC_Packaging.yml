@@ -1,0 +1,224 @@
+---
+- name:  Enter the Matrix to get hostname.
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  
+  tasks:
+    - name: add host to local inventory
+      add_host:
+        groups: OneAVC_Packaging
+        name: "{{ HostNameFact }}"
+
+- name:  VDI OneAVC Packaging Build playbook
+  hosts: OneAVC_Packaging
+  vars: 
+      ansible_connection: winrm
+      ansible_port: 5985
+      ansible_winrm_read_timeout_sec: 900
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_transport: credssp
+      reboot_timeout: 1800
+      OfficeSKU: "{{ OfficeSKU }}"
+      PackagingTool: "{{ PackagingTool }}"
+      AOClient: "{{ AOClient }}"
+      AdminRights: "{{ AdminRights }}"
+      EmailAddress: "{{ EmailAddress }}"
+
+  gather_facts: false
+  tasks:
+    - name: Wait for WinRM
+      wait_for_connection:
+        delay: 10
+        timeout: 3000
+
+    - name: Set time zone [SHELL]
+      win_shell: Set-TimeZone -Id "W. Europe Standard Time" -PassThru
+
+    - name: Resync time zone [SHELL]
+      win_shell: w32tm /resync /force
+
+    - name: Copy DSC Modules 
+      win_dsc:
+        resource_name: File
+        Ensure: 'Present'
+        Type: 'Directory' 
+        CheckSum: 'SHA-256'
+        Recurse: true
+        SourcePath: '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\DXC\DSC'
+        DestinationPath: 'C:\Program Files\WindowsPowerShell\Modules'
+        Force: true
+ 
+    - name: Copy Folders
+      win_copy:
+        src: "{{ item }}"
+        dest: C:\Windows
+        remote_src: yes
+      loop:
+       - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\Copy\AVC'
+       - '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\Copy\SysWOW64'
+
+    - name: Create Required Directories
+      win_dsc:
+        resource_name: File
+        Type: 'Directory'
+        DestinationPath: "{{ item }}"
+        Ensure: "Present"
+      loop:
+       - 'C:\TEMP'
+       - 'C:\TEMP\LOGS'
+
+    - name: Set PS Execution Policy
+      win_dsc:
+        resource_name: PowerShellExecutionPolicy
+        ExecutionPolicyScope: 'LocalMachine'
+        ExecutionPolicy: 'Unrestricted'
+
+    - name: Reboot before Visual c++ 2012-2022 Install
+      win_reboot:
+        post_reboot_delay: 30  
+        reboot_timeout: 1500
+
+    - name: Add user to local administrators group using PowerShell
+      when: AdminRights == 'Add'
+      win_shell: |
+        Add-LocalGroupMember -Group Administrators -Member "{{ EmailAddress }}"
+      ignore_errors: true
+
+    - name: Install Visual C++ 2012 x86;  AppId -  
+      win_dsc: 
+        resource_name: Package 
+        Name  : 'Microsoft Visual C++ 2012 x86 Additional Runtime - 11.0.61030' 
+        ProductId : ''
+        Arguments : '/Q'
+        Ensure :  'Present'
+        Path : '\\aalmcspar001\sources\Packages\Microsoft\Visual_Studio_Redistributables\C++_2012\vcredist_x86.exe'
+        LogPath : 'c:\Windows\Installer\Visual_C++_2012_x86_Redist.log' 
+
+    - name: Install Visual C++ 2012 x64;  AppId -  
+      win_dsc: 
+        resource_name: Package 
+        Name  : 'Microsoft Visual C++ 2012 x64 Additional Runtime - 11.0.61030' 
+        ProductId : ''
+        Arguments : '/Q'
+        Ensure :  'Present'
+        Path : '\\aalmcspar001\sources\Packages\Microsoft\Visual_Studio_Redistributables\C++_2012\vcredist_x64.exe'
+        LogPath : 'c:\Windows\Installer\Visual_C++_2012_x64_Redist.log'
+
+    - name: Install Visual C++ 2013 x86;  AppId -  
+      win_dsc: 
+        resource_name: Package 
+        Name  : 'Microsoft Visual C++ 2013 x86 Additional Runtime - 12.0.40660' 
+        ProductId : ''
+        Arguments : '/Install /quiet /norestart'
+        Ensure :  'Present'
+        Path : '\\aalmcspar001\sources\Packages\OneAVC\Visual_Studio_Redistributables\2013\vcredist_x86.exe'
+        LogPath : 'c:\Windows\Installer\Visual_C++_2013_x86_Redist.log' 
+
+    - name: Install Visual C++ 2013 x64;  AppId -  
+      win_dsc: 
+        resource_name: Package 
+        Name  : 'Microsoft Visual C++ 2013 x64 Additional Runtime - 12.0.40660' 
+        ProductId : ''
+        Arguments : '/Install /quiet /norestart'
+        Ensure :  'Present'
+        Path : '\\aalmcspar001\sources\Packages\OneAVC\Visual_Studio_Redistributables\2013\vcredist_x64.exe'
+        LogPath : 'c:\Windows\Installer\Visual_C++_2013_x64_Redist.log'
+
+    - name: Install Visual C++ 2015_2022_x64_x86;  AppId -  1_C_plus_plus
+      win_dsc: 
+        resource_name: InstallerClass
+        PackageName : 'Install_Visual_C++_2015_2022'
+        Ensure :  'Present'
+        Executable : 'Install.cmd'
+        Source : '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\Microsoft\Visual_Studio_Redistributables\C++_2015-2022\'
+
+    - name: Install .Net6 Desktop Runtime x86;  AppId - ?
+      win_dsc: 
+        resource_name: InstallerClass
+        PackageName : 'Install_Net6DesktopRuntime'
+        Ensure :  'Present'
+        Executable : 'Install.cmd'
+        Source : '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\Net6DesktopRuntime\'
+
+    - name: Reboot Action before Office Install
+      win_reboot:
+        post_reboot_delay: 30
+        reboot_timeout: 1500
+        
+    - name: Wait for WinRM
+      wait_for_connection:
+        delay: 10
+        timeout: 3000
+    
+    - name: MS_Office365 64bit;  AppId - ?
+      when: OfficeSKU
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName : 'Office_365_64bit'
+        DetectionProductRegistryKeys : 'HKLM:\Software\Microsoft\Office\ClickToRun\Configuration'
+        Ensure :  'Present'
+        Executable : 'OneAVC_64-bit_configure.cmd'
+        Source : '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\OfficeM365\'
+  
+    - name: ProfileUnity FlexApp Packaging Console- ?
+      when: PackagingTool == 'FlexApp'
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName : 'FlexAppPackConsole'
+        DetectionProductRegistryKeys : 'HKLM:\SOFTWARE\WOW6432Node\Liquidware Labs\FlexApp Packaging Console'
+        Ensure :  'Present'
+        Executable : 'install.cmd'
+        Source : '\\aalmcspar001.wwg00m.rootdom.net\sources\Packages\OneAVC\FlexAppPackaging\Extract\'
+
+    - name: 21554_Profile_Unity_Client_Tools_6.8.6.8711;  AppId - WAPP0021570
+      when: AOClient
+      win_dsc: 
+        resource_name: InstallerClass 
+        PackageName         : '21554_Profile_Unity_Client_Tools_6.8.6.8711'
+        Ensure              : 'Present'
+        Executable          : 'Deploy-Application.exe'
+        Source              : '\\AALMCSPAR001.wwg00m.rootdom.net\Allianz_packages\Liquidware\FlexApp_Client_Tools\6.8.6\'
+        DetectionProductRegistryKeys     : 'HKLM:\SOFTWARE\DXC\Packages\21554_LiquidwareLabs_ProfileUnityClient_6.8.6'
+               
+    - name: Wait for WinRM
+      wait_for_connection:
+        delay: 90
+        timeout: 3000
+        
+#Citrix Optimizer Tool
+    - name: CitrixOptimizerTool
+      win_shell: C:\Windows\AVC\CitrixOptimizerTool\CtxOptimizerEngine.ps1 -Source Citrix_Windows_11_2009_OneAVC_Packaging.xml -Mode execute
+      ignore_errors: true
+
+# Set SYSTEM Proxy for update section
+
+    - name: Set a proxy with a specific port with a bypass list
+      win_http_proxy:
+        proxy: zsc-fra.emea.lb.sec.allianz:8080
+
+# Windows Updates
+    - name: Windows Updates
+      win_updates:
+        category_names:
+          - Application
+          - Connectors
+          - CriticalUpdates
+          - DeveloperKits
+          - FeaturePacks
+          - Guidance
+          - SecurityUpdates
+          - ServicePacks
+          - Tools
+          - UpdateRollups
+          - Updates
+        state: installed
+        reboot: true
+        reboot_timeout: 3600
+        log_path: c:\Windows\Installer\ansible_wu.txt
+
+# FINAL REBOOT, DO NOT ENTER ANY ACTIONS BELOW THIS LINE.
+    - name: Final Reboot action
+      win_reboot:
+        post_reboot_delay: 30
+        reboot_timeout: 1500

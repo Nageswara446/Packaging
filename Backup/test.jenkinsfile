@@ -1,0 +1,118 @@
+
+def JenkinsEnv = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Dev' : 'none' }"
+def Ansible = "${env.Build_URL.split('-')[1] == 'prod'  ? 'Ansible Tower Prod' : env.Build_URL.split('-')[1] == 'preprod'  ? 'Ansible Tower ' : 'none' }"
+
+//def agentName = "TerraformAgentAzure${JenkinsEnv == 'Prod' ? LocationToBuild.toLowerCase() : JenkinsEnv == 'Dev' ? 'dgwc1' : 'none'}"
+
+def agentName = "TerraformAgentAzurefc1"
+
+pipeline {
+    agent {
+        label "${agentName}"
+    }
+
+    parameters {
+        string(name: 'VM_Name', defaultValue: '', description: 'Enter the VM Name for Decommissioning', trim: true)
+        string(name: 'Hours', defaultValue: '8', description: 'Enter the number of hours before decommissioning', trim: true)
+    }
+    stages {
+        stage('Modify Decommissioning Hours') {
+            when {
+                expression { params.Hours != userInput }
+            }
+            steps {
+                script {
+                    userInput = input(
+                        id: 'userInput',
+                        message: 'Enter the modified decommissioning hours:',
+                        parameters: [string(defaultValue: params.Hours, description: 'Modified Hours')]
+                    )
+                    params.Hours = userInput
+                }
+            }
+        }
+        stage('Decommission VM from Azure') {
+            steps {
+                script {
+                    def vmName = params.VM_Name
+                    def subscriptionId = "your_subscription_id"
+                    def decommissionHours = params.Hours.toInteger()
+
+                    // Sleep based on the modified decommissioning hours
+                    sleep time: decommissionHours * 3600, unit: 'SECONDS'
+
+                    try {
+                        sh "az vm deallocate --resource-group your_resource_group --name $vmName --subscription $subscriptionId"
+                        
+                        // Add more Azure CLI commands or other steps after deallocate if needed
+
+                    } catch (Exception e) {
+                        // Handle errors, log information, send notifications, etc.
+                        echo "Error during VM decommission: ${e.message}"
+                        error "Failed to decommission VM"
+                    }
+                }
+            }
+        }
+
+        stage("Read Config"){
+            steps {
+                dir("configs") {
+                    script {
+                        def imagesettings = readJSON file: "${VDI_BUILD_LOCATION}-STD.json"
+
+                        // Update the environment variable
+                        env.TF_VAR_vm_name = "${imagesettings.vmname}${currentBuild.number + 10000}"
+                        env.TF_VAR_subnet_name = "${imagesettings.subnet_name}"
+                        env.TF_VAR_resource_group_name = "${imagesettings.resource_group_name}"
+                        env.TF_VAR_vnet = "${imagesettings.vnet}"
+                        env.TF_VAR_vnet_rg = "${imagesettings.vnet_rg}"
+                        env.TF_VAR_ad_ou_location = "${imagesettings.ad_ou_location}"
+                        env.TF_VAR_ad_domain_name = "${imagesettings.ad_domain_name}"
+                        env.TF_VAR_subscriptionId = "${imagesettings.subscriptionId}"
+                        env.TenantId = "${imagesettings.tenantId}"
+                        env.TF_VAR_domain_techuser = "${imagesettings.domain_techuser}"
+                        env.TF_CLI_ARGS_init = " -reconfigure -backend=true -backend-config=subscription_id=${imagesettings.backend_subscriptionId} -backend-config=resource_group_name=${imagesettings.backend_rg} -backend-config=storage_account_name=${imagesettings.backend_storageaccount} -backend-config=container_name=${imagesettings.backend_containername} -backend-config=key=${TF_VAR_vm_name}.${TF_VAR_subscriptionId}.tfstate"
+                        env.ARM_SUBSCRIPTION_ID = "${imagesettings.subscriptionId}"
+                        env.Azure_Credential_ID = "${imagesettings.credential}"
+                        env.Proxy = "${agentName == 'TerraformAgentAzuregwc1' ? 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80' : agentName == 'TerraformAgentAzurefc1' ? 'http://proxy-cloudavcinfra-p.fc1.azure.aztec.cloud.allianz:80' : 'http://proxy-cloudavcinfra-p.gwc1.azure.aztec.cloud.allianz:80'}"
+                        env.TF_VAR_Machine_Type = "${env.MachineType}"
+                        env.TF_VAR_EmailAddress = "${env.EmailAddress}"
+                        env.MainVar = "STD.Azure"
+
+                        echo "Selected Package Complexity: ${params.PackageComplexity}"
+
+                        // Add logic for setting expiration date based on PackageComplexity
+                        def currentDate = new Date()
+
+                        // Set expiration based on PackageComplexity
+                        def hoursToAdd = 0
+                        if (params.PackageComplexity == 'Simple') {
+                            hoursToAdd = 24
+                        } else if (params.PackageComplexity == 'Medium') {
+                            hoursToAdd = 48
+                        } else if (params.PackageComplexity == 'Complex') {
+                            hoursToAdd = 72
+                        }
+
+                        // Calculate new expiration date using Date manipulation
+                        def expirationDate = new Date(currentDate.time + (hoursToAdd * 60 * 60 * 1000))
+
+                        // Use expirationDate as needed in your pipeline
+                        echo "Current Date: ${currentDate}"
+                        echo "Expiration Date: ${expirationDate}"
+
+                        // Format expiration date as "yyyy-MM-dd HH:mm:ss"
+                        env.EXPIRATION_DATE = expirationDate.format("yyyy-MM-dd HH:mm:ss")
+                        echo "Formatted Expiration Date: ${env.EXPIRATION_DATE}"
+
+                    }
+                }
+                echo "VM Name is: $env.TF_VAR_vm_name"
+                echo "OfficeSKU is: ${env.OfficeSKU}"
+                echo "PackagingTool is: ${env.PackagingTool}"
+                echo "MachineType is : ${env.TF_VAR_Machine_Type}"
+            }
+        }
+    }
+}
